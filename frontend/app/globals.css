@@ -67,3 +67,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 .notice.bad { border-color: var(--bad); }
 .empty { color: var(--muted); padding: 24px; text-align: center; background: var(--panel); border: 1px dashed var(--border); border-radius: 8px; }
 code { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-size: 12.5px; }
+
+/* Config studio (Phase 3) form controls */
+input, select {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 9px; font-size: 13px; margin: 2px 0 8px;
+}
+input[type="checkbox"] { width: auto; margin-right: 6px; }
+label { display: inline-block; margin: 4px 0; }

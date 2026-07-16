@@ -18,8 +18,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api import tools
 from api.compliance.consent import consent_policy
+from api.compliance.outbound import help_reply, is_help, is_opt_out, opt_out_confirmation
 from api.compliance.redaction import redact_turns
-from api.orchestration.config import load_agent_config, update_agent_config
+from api.orchestration.config import (
+    GuardrailSettings,
+    QualificationRules,
+    ScriptConfig,
+    load_agent_config,
+    update_agent_config,
+)
+from api.orchestration.threads import ThreadEngine, preview_conversation
 from api.platform import alerts as platform_alerts
 from api.platform import auth
 from api.platform import events as platform_events
@@ -30,11 +38,15 @@ from api.platform.schemas import (
     CreateFirmResponse,
     CreateTokenRequest,
     CreateTokenResponse,
+    InboundSMSRequest,
+    LeadWebhookRequest,
     LookupCallerRequest,
+    PreviewRequest,
     SendSMSRequest,
     TakeMessageRequest,
     ToolQualifyRequest,
     ToolScheduleRequest,
+    TrackerEnrollRequest,
     TranscriptRequest,
     TransferRequest,
     TurnMetricsV1,
@@ -47,6 +59,11 @@ router = APIRouter(prefix="/v1")
 
 def _platform(request: Request):
     return request.app.state.platform
+
+
+def _thread_engine(request: Request) -> ThreadEngine:
+    p = _platform(request)
+    return ThreadEngine(p.db, p.session_store, p.sms, p.email)
 
 
 def _tool_ctx(request: Request, firm: auth.AuthedFirm) -> tools.ToolContext:
@@ -589,6 +606,325 @@ def replay_event(event_id: int, request: Request) -> dict:
     if not replayed:
         raise HTTPException(status_code=409, detail="Event is not dead-lettered")
     return {"status": "requeued", "event_id": event_id}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — omnichannel: lead webhook (Digital Lead Chaser), inbound SMS,
+# threads, treatment tracker, config-studio preview
+# ---------------------------------------------------------------------------
+
+
+@router.post("/hooks/leads")
+def lead_webhook(
+    req: LeadWebhookRequest, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Webform/ad-lead ingest: contact + lead + ``lead.created`` in one
+    transaction. The chaser (event consumer) makes first contact within
+    seconds — this endpoint never blocks on any outbound transport."""
+    if req.source not in ("web", "ad"):
+        raise HTTPException(status_code=422, detail="source must be 'web' or 'ad'")
+    if not req.phone and not req.email:
+        raise HTTPException(status_code=422, detail="lead needs a phone or an email")
+    p = _platform(request)
+    config = load_agent_config(p.db, p.session_store, firm.firm_id)
+    with p.db.firm(firm.firm_id) as conn:
+        contact = None
+        if req.phone:
+            contact = conn.execute(
+                "SELECT id, sms_opt_out_at FROM contacts WHERE phone = %s LIMIT 1", (req.phone,)
+            ).fetchone()
+        if contact is None and req.email:
+            contact = conn.execute(
+                "SELECT id, sms_opt_out_at FROM contacts WHERE email = %s LIMIT 1", (req.email,)
+            ).fetchone()
+        if contact is None:
+            contact = conn.execute(
+                "INSERT INTO contacts (firm_id, name, phone, email) VALUES (%s, %s, %s, %s)"
+                " RETURNING id, sms_opt_out_at",
+                (firm.firm_id, req.name, req.phone, req.email),
+            ).fetchone()
+        # Consent is recorded but never resurrected: once someone opts out,
+        # only they can opt back in — a fresh form submit does not override STOP.
+        if req.sms_consent and contact["sms_opt_out_at"] is None:
+            conn.execute(
+                "UPDATE contacts SET sms_consent = true, sms_consent_source = %s WHERE id = %s",
+                (req.consent_source or f"{req.source} form", contact["id"]),
+            )
+        effective_consent = bool(req.sms_consent and contact["sms_opt_out_at"] is None)
+        lead = conn.execute(
+            "INSERT INTO leads (firm_id, source, contact_id, status, practice_area, details)"
+            " VALUES (%s, %s, %s, 'new', %s, %s) RETURNING id, created_at",
+            (
+                firm.firm_id,
+                req.source,
+                contact["id"],
+                req.practice_area or (config.script.practice_area if config else None),
+                json.dumps(req.details),
+            ),
+        ).fetchone()
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "lead.created",
+            {
+                "lead_id": str(lead["id"]),
+                "contact_id": str(contact["id"]),
+                "name": req.name,
+                "phone": req.phone,
+                "email": req.email,
+                "source": req.source,
+                "preferred_channel": req.preferred_channel,
+                "sms_consent": effective_consent,
+            },
+        )
+    return {"status": "accepted", "lead_id": str(lead["id"]), "contact_id": str(contact["id"])}
+
+
+@router.post("/hooks/sms")
+def sms_webhook(
+    req: InboundSMSRequest, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Inbound SMS ingest. Opt-out/help keywords are honored inline and
+    unconditionally (CTIA); everything else becomes a ``message.received``
+    event the thread engine consumes asynchronously."""
+    p = _platform(request)
+    config = load_agent_config(p.db, p.session_store, firm.firm_id)
+    firm_name = config.firm_name if config else "This firm"
+
+    if is_opt_out(req.body):
+        with p.db.firm(firm.firm_id) as conn:
+            conn.execute(
+                "UPDATE contacts SET sms_consent = false, sms_opt_out_at = now() WHERE phone = %s",
+                (req.from_number,),
+            )
+            threads = conn.execute(
+                "UPDATE threads SET status = 'closed', closed_reason = 'opted_out', updated_at = now()"
+                " WHERE channel = 'sms' AND address = %s AND status = 'open' RETURNING id",
+                (req.from_number,),
+            ).fetchall()
+            for t in threads:
+                conn.execute(
+                    "UPDATE followups SET status = 'canceled', done_at = now()"
+                    " WHERE thread_id = %s AND status = 'pending'",
+                    (t["id"],),
+                )
+            conn.execute(
+                "INSERT INTO messages (firm_id, channel, thread_id, direction, body)"
+                " VALUES (%s, 'sms', %s, 'in', %s)",
+                (firm.firm_id, req.from_number, req.body),
+            )
+            platform_events.emit(
+                conn, firm.firm_id, "message.optout", {"address": req.from_number}
+            )
+        # The CTIA-required confirmation is the one message allowed after STOP.
+        p.sms.send(req.from_number, opt_out_confirmation(firm_name))
+        return {"status": "opted_out"}
+
+    if is_help(req.body):
+        p.sms.send(req.from_number, help_reply(firm_name))
+        return {"status": "help_sent"}
+
+    with p.db.firm(firm.firm_id) as conn:
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "message.received",
+            {"channel": "sms", "address": req.from_number, "body": req.body},
+        )
+    return {"status": "queued"}
+
+
+@router.get("/threads")
+def list_threads(
+    request: Request, limit: int = 50, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> list[dict]:
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        rows = conn.execute(
+            "SELECT id, channel, address, goal, status, closed_reason, lead_id,"
+            "       created_at, updated_at, last_inbound_at, last_outbound_at"
+            " FROM threads ORDER BY updated_at DESC LIMIT %s",
+            (min(limit, 200),),
+        ).fetchall()
+    return [
+        {
+            **r,
+            "id": str(r["id"]),
+            "lead_id": str(r["lead_id"]) if r["lead_id"] else None,
+            **{
+                k: str(r[k] or "")
+                for k in ("created_at", "updated_at", "last_inbound_at", "last_outbound_at")
+            },
+        }
+        for r in rows
+    ]
+
+
+@router.get("/threads/{thread_id}")
+def get_thread(
+    thread_id: str, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        thread = conn.execute("SELECT * FROM threads WHERE id = %s", (thread_id,)).fetchone()
+        if thread is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        messages = conn.execute(
+            "SELECT direction, body, ts FROM messages WHERE thread_id = %s ORDER BY ts",
+            (thread_id,),
+        ).fetchall()
+    return {
+        **{k: str(v) if v is not None else None for k, v in thread.items()},
+        "state": thread["state"],
+        "messages": [{**m, "ts": str(m["ts"])} for m in messages],
+    }
+
+
+@router.post("/tracker/enroll")
+def tracker_enroll(
+    req: TrackerEnrollRequest, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Enroll a signed client in the treatment tracker (Phase 3). Consent for
+    these check-ins is part of the representation agreement; STOP still wins."""
+    p = _platform(request)
+    engine = _thread_engine(request)
+    with p.db.firm(firm.firm_id) as conn:
+        opted_out = conn.execute(
+            "SELECT 1 FROM contacts WHERE phone = %s AND sms_opt_out_at IS NOT NULL",
+            (req.phone,),
+        ).fetchone()
+    if opted_out:
+        raise HTTPException(status_code=409, detail="Contact has opted out of SMS")
+    try:
+        thread_id = engine.enroll_tracker(
+            firm.firm_id,
+            name=req.name,
+            phone=req.phone,
+            matter_description=req.matter_description,
+            cadence_days=req.cadence_days,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    with p.db.firm(firm.firm_id) as conn:
+        conn.execute(
+            "UPDATE contacts SET sms_consent = true, sms_consent_source = 'client agreement'"
+            " WHERE phone = %s AND sms_opt_out_at IS NULL",
+            (req.phone,),
+        )
+    return {"status": "enrolled", "thread_id": thread_id}
+
+
+# ---------------------------------------------------------------------------
+# Config studio v1 (Phase 3): agent listing + test-call preview
+# ---------------------------------------------------------------------------
+
+
+@router.get("/agents")
+def list_agents(
+    request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> list[dict]:
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        rows = conn.execute(
+            "SELECT id, name, role, voice_id, updated_at FROM agents ORDER BY created_at"
+        ).fetchall()
+    return [{**r, "id": str(r["id"]), "updated_at": str(r["updated_at"])} for r in rows]
+
+
+@router.post("/agents/{agent_id}/preview")
+def preview_test_call(
+    agent_id: str,
+    req: PreviewRequest,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Test-call preview: run caller messages through the same brain the live
+    channels use — including unsaved config overrides — with no side effects.
+    This is how a firm verifies a script/rule edit before it meets a caller."""
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        agent = conn.execute("SELECT role FROM agents WHERE id = %s", (agent_id,)).fetchone()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    config = load_agent_config(p.db, p.session_store, firm.firm_id, agent["role"])
+    if config is None:
+        raise HTTPException(status_code=409, detail="Agent has no loadable config")
+    try:
+        updates: dict = {}
+        if req.script_config is not None:
+            updates["script"] = ScriptConfig.model_validate(req.script_config)
+        if req.qualification_rules is not None:
+            updates["qualification"] = QualificationRules.model_validate(req.qualification_rules)
+        if req.guardrails is not None:
+            updates["guardrails"] = GuardrailSettings.model_validate(req.guardrails)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if updates:
+        config = config.model_copy(update=updates)
+    return preview_conversation(config, req.messages, contact_name=req.contact_name)
+
+
+@router.get("/analytics/chaser")
+def analytics_chaser(
+    request: Request, days: int = 30, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Speed-to-lead funnel: how fast chased leads get their first contact.
+    The Phase 3 exit criterion is p95 under 60 s from webform submit."""
+    days = min(max(days, 1), 365)
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        row = conn.execute(
+            "SELECT count(*) AS total,"
+            "       count(first_contact_at) AS contacted,"
+            "       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY"
+            "         extract(epoch FROM first_contact_at - created_at))::numeric, 1)::float AS p50_seconds,"
+            "       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY"
+            "         extract(epoch FROM first_contact_at - created_at))::numeric, 1)::float AS p95_seconds,"
+            "       count(*) FILTER (WHERE first_contact_at - created_at <= interval '60 seconds')"
+            "         AS contacted_under_60s"
+            " FROM leads WHERE source IN ('web', 'ad')"
+            "   AND created_at > now() - make_interval(days => %s)",
+            (days,),
+        ).fetchone()
+    total = row["total"]
+    return {
+        "days": days,
+        "slo_seconds": 60,
+        "web_ad_leads": total,
+        "contacted": row["contacted"],
+        "contact_rate": round(row["contacted"] / total, 3) if total else None,
+        "first_contact_p50_seconds": row["p50_seconds"],
+        "first_contact_p95_seconds": row["p95_seconds"],
+        "under_60s_rate": round(row["contacted_under_60s"] / row["contacted"], 3)
+        if row["contacted"]
+        else None,
+    }
+
+
+@router.get("/admin/ops/onboarding", dependencies=[Depends(auth.require_admin)])
+def ops_onboarding(request: Request) -> dict:
+    """Time-to-first-live-call per firm — the onboarding-speed metric the
+    config studio exists to drive down (Phase 3 exit: under a day)."""
+    p = _platform(request)
+    with p.db.admin() as conn:
+        rows = conn.execute(
+            "SELECT f.id, f.name, f.created_at, min(c.started_at) AS first_call_at,"
+            "       extract(epoch FROM min(c.started_at) - f.created_at)::float"
+            "         AS time_to_first_call_seconds"
+            " FROM firms f LEFT JOIN calls c ON c.firm_id = f.id"
+            " GROUP BY f.id, f.name, f.created_at ORDER BY f.created_at"
+        ).fetchall()
+    return {
+        "firms": [
+            {
+                **r,
+                "id": str(r["id"]),
+                "created_at": str(r["created_at"]),
+                "first_call_at": str(r["first_call_at"]) if r["first_call_at"] else None,
+            }
+            for r in rows
+        ]
+    }
 
 
 @router.get("/events")

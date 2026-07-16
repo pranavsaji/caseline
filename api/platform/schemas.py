@@ -116,6 +116,49 @@ class TranscriptRequest(BaseModel):
     recording_uri: str | None = None
 
 
+# --- Phase 3: omnichannel ---
+
+
+class LeadWebhookRequest(BaseModel):
+    """Webform / ad-platform lead submission (the Digital Lead Chaser input)."""
+
+    name: str
+    phone: str | None = None
+    email: str | None = None
+    source: str = "web"  # web | ad
+    practice_area: str | None = None
+    details: dict = Field(default_factory=dict)
+    # TCPA prior express consent, as captured by the form (checkbox + record
+    # of what the person agreed to). Without it there is no automated chase.
+    sms_consent: bool = False
+    consent_source: str | None = None
+    preferred_channel: str | None = None  # sms | voice | email
+
+
+class InboundSMSRequest(BaseModel):
+    from_number: str
+    body: str
+    to_number: str | None = None
+
+
+class TrackerEnrollRequest(BaseModel):
+    name: str
+    phone: str
+    matter_description: str | None = None
+    cadence_days: int = Field(default=14, ge=1, le=90)
+
+
+class PreviewRequest(BaseModel):
+    """Config-studio test-call preview: caller messages + optional unsaved
+    config overrides, simulated through the same brain with zero side effects."""
+
+    messages: list[str] = Field(min_length=1, max_length=30)
+    contact_name: str = "Preview Caller"
+    script_config: dict | None = None
+    qualification_rules: dict | None = None
+    guardrails: dict | None = None
+
+
 class TurnMetricsV1(BaseModel):
     call_id: str
     speech_id: str

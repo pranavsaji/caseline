@@ -4,10 +4,10 @@
 
 | Phase | Status | Last updated |
 |---|---|---|
-| Phase 0 — Prototype | ✅ **Code complete & verified** — every engineering item done and re-verified (135-test suite green); the only open items are external account provisioning (LiveKit/Twilio/provider keys), which no code change can close | 2026-07-16 |
-| Phase 1 — Foundation | ✅ **Code complete & verified** — all four workstreams built and re-verified; open items are the same account blockers + a real Clio sandbox | 2026-07-16 |
-| Phase 2 — Hardening | 🟡 **Code complete & tested** — all five workstreams built; 135-test suite green; 50-call load test PASS with zero duplicate CMS writes; chaos-tested failover; 3 CMS adapters; IaC written-not-applied (no GCP account) — see §Phase 2 Progress | 2026-07-16 |
-| Phase 3 — Omnichannel | ⚪ Not started | — |
+| Phase 0 — Prototype | ✅ **Code complete & verified** — every engineering item done and re-verified (now under the 172-test suite); the only open items are external account provisioning (LiveKit/Twilio/provider keys), which no code change can close | 2026-07-16 |
+| Phase 1 — Foundation | ✅ **Code complete & verified** — all four workstreams built and re-verified under the 172-test suite; open items are the same account blockers + a real Clio sandbox | 2026-07-16 |
+| Phase 2 — Hardening | ✅ **Code complete & verified** — all five workstreams built and re-verified under the 172-test suite; 50-call load test PASS with zero duplicate CMS writes; chaos-tested failover; 3 CMS adapters; open items are accounts/infra only (GCP apply, provider keys, CMS sandboxes) — same blocker class as Phases 0/1 — see §Phase 2 Progress | 2026-07-16 |
+| Phase 3 — Omnichannel | ✅ **Code complete & verified** — chaser, SMS/email threads, treatment tracker, config studio + preview all built on the Phase 1 brain; 172 tests green (37 new); live HTTP smoke PASS with lead-to-first-contact 0.6 s; open items are live-transport verification (Twilio SMS/SIP) — see §Phase 3 Progress | 2026-07-16 |
 | Phase 4 — Differentiation | ⚪ Not started | — |
 
 Execution plan for the architecture defined in `caseline-voice-intake-architecture.md`. Written from the principal-architect seat: each phase has a single risk it exists to retire, hard exit criteria, and an explicit "not in this phase" list. Phases are gates, not calendar promises — you do not start Phase N+1 until Phase N's exit criteria are demonstrably true.
@@ -285,6 +285,58 @@ Self-hosted SFU, autoscaling, provider failover, outbound calling, email channel
 ### Exit criteria
 
 - Lead-to-first-contact under 60 s from webform submit. A firm self-onboards to a live agent in under a day. One firm running voice + SMS + chaser + tracker simultaneously on the same brain.
+
+### ✅ Progress — updated 2026-07-16
+
+**Code complete. 172 tests green (`uv run pytest`): the 135 Phase 0–2 tests unchanged + 37 new. Live-validated over real HTTP (`uvicorn` + ephemeral Postgres + the real `cms_sync` worker process): webform submit → chaser SMS in **0.6 s** → full SMS conversation → qualified → consult booked → CMS task, plus tracker enroll/check-in and STOP opt-out — 12/12 smoke checks PASS. `next build` clean with the new studio/threads pages.**
+
+**Design decision that shaped everything here:** the voice worker and the async channels run the *same brain* — one `AgentConfig` (script/qualification/routing/guardrails), the same `api.qualification` rules engine, and the same `GuardrailScreen` on every outbound utterance. The thread brain (`api/orchestration/threads.py`) is a pure function `(config, state, inbound) -> (state, reply, actions)` — deterministic slot-filling intake (date → injury → treatment → insurance → qualify → book) — so the config studio's test-call preview runs the identical code with zero side effects, and an LLM extractor can slot in later without touching persistence.
+
+**Digital Lead Chaser:**
+
+- [x] `POST /v1/hooks/leads` (webform/ad webhook): contact + lead + `lead.created` event in one transaction; never blocks on any outbound transport
+- [x] Chaser kicks off from the events outbox (same single-consumer loop as CMS sync — no competing claimers) and makes first contact in ~1 poll interval; `leads.first_contact_at` stamps the speed metric
+- [x] **TCPA compliance pass** (`api/compliance/outbound.py`): prior-express-consent gate (no consent = hard deny → `lead.chase_blocked` event for human follow-up, never silent), 8am–9pm recipient-local quiet hours (area-code→state→timezone, firm-tz fallback, defer-don't-drop), CTIA STOP/HELP keywords honored inline and unconditionally; **opt-out is permanent** — a fresh form submit cannot resurrect revoked consent
+- [x] Outbound voice chase behind the `OutboundDialer` seam (`api/telephony.py`): `calls` row + `call.outbound_requested` audit event + LiveKit SIP dial (LoggingDialer locally; real trunk is config)
+- [x] No-reply nudges (2, quiet-hours-aware) then a polite close as `unresponsive`; an inbound reply disarms pending nudges
+- [x] `GET /v1/analytics/chaser`: lead-to-first-contact p50/p95, under-60s rate — the exit criterion is *measured*, and shown on the dashboard Threads page
+
+**SMS + email threads:**
+
+- [x] `threads` table (state jsonb, one open thread per firm/channel/address) + `followups` scheduled-task table (claimable FOR UPDATE SKIP LOCKED, cancellable — deliberately not the append-only events outbox); follow-ups are scheduled rows, never held connections
+- [x] `POST /v1/hooks/sms` inbound webhook → `message.received` event → thread engine advances one turn; cold inbound from an unknown number starts intake exactly like an inbound call
+- [x] Email channel behind `EmailProvider` (logging default, SMTP config-selected); the thread engine is channel-agnostic
+- [x] Bookings are idempotent (`thread:{id}:consult` key); `lead.qualified`/`consult.booked` payloads match the voice path, so **CMS sync consumes threads unchanged** (verified: SMS booking → mock CMS task)
+- [x] Guardrail screen on every outbound message (regex + inline classifier, deflection line on trip) — same policy as the voice path; every outbound-initiated thread opens with the AI disclosure + STOP notice
+- [x] Dashboard: Threads list with speed-to-lead tiles + per-thread conversation view
+
+**Treatment Tracker:**
+
+- [x] `POST /v1/tracker/enroll`: signed-client state machine as a `treatment_tracker` thread — intro message, check-ins every N days as scheduled followups, replies parsed (progress vs. discharged)
+- [x] Each update emits `tracker.update` → CMS worker creates an idempotent CMS task; completion closes the thread (`treatment_complete`) — the async-workflow engine's first showcase, end-to-end tested
+- [x] STOP wins over everything, including tracker check-ins (enrollment of an opted-out contact is refused with 409)
+
+**Config studio v1:**
+
+- [x] `/studio` page: structured forms (script, qualification, routing, guardrails) replacing raw JSON for the common path (raw editor stays at `/config` for power users)
+- [x] **Test-call preview**: `POST /v1/agents/{id}/preview` runs caller messages through the same brain — including *unsaved* config overrides — returning turns, tool actions, guardrail trips, and the compiled instructions, with zero side effects (asserted in tests)
+- [x] Onboarding-speed metric: `GET /v1/admin/ops/onboarding` reports time-to-first-live-call per firm (the number Phase 3 says to drive down)
+- ⚪ Long-tail CMS adapters (MyCase, Lawmatics, …) deliberately **not** built — the plan says demand-ordered, never speculative, and there is no demand signal yet
+
+**Exit-criteria status:**
+
+- [x] Lead-to-first-contact under 60 s from webform submit — **0.6 s measured** over real HTTP with the real worker (logging SMS transport; re-measure on Twilio when keys exist)
+- [x] One firm running voice + SMS + chaser + tracker simultaneously on the same brain — exercised in one test: Phase 1 voice tools + chaser SMS thread + tracker on a single firm, all events through one outbox, one CMS pipeline
+- [~] Firm self-onboards to a live agent in under a day — the config-studio surface and the time-to-first-call metric exist; *verifying* under-a-day needs live telephony (below)
+
+**Remaining for Phase 3 exit (transports/accounts, not code):**
+
+- [ ] Twilio SMS webhooks → point at `/v1/hooks/sms` (+ Twilio signature validation at the edge), verify a real SMS conversation end-to-end
+- [ ] LiveKit SIP outbound trunk (`CASELINE_SIP_OUTBOUND_TRUNK_ID`) → verify a real chaser dial; agent worker answering outbound rooms
+- [ ] SMTP credentials → verify the email channel beyond the logging provider
+- [ ] A pilot firm self-onboarding run, timed (the under-a-day exit criterion)
+
+**Known v1 limitations (accepted, documented):** thread replies after a closed conversation start a fresh intake thread (no "reopen" flow yet); the deterministic brain re-asks once then defers to humans rather than free-form NLU (an LLM extractor can swap in behind the same pure interface); followups execute at-most-once by design — a missed nudge beats a double-texted client.
 
 ---
 

@@ -45,14 +45,27 @@ class PlatformContext:
     cipher: object
     rate_limiter: object
     admin_token: str | None
+    email: object = None  # EmailProvider (Phase 3); LoggingEmailProvider default
+    dialer: object = None  # OutboundDialer (Phase 3); LoggingDialer default
+
+    def __post_init__(self) -> None:
+        if self.email is None:
+            from api.messaging import LoggingEmailProvider
+
+            self.email = LoggingEmailProvider()
+        if self.dialer is None:
+            from api.telephony import LoggingDialer
+
+            self.dialer = LoggingDialer()
 
 
 def _build_platform(database_url: str, admin_token: str | None) -> PlatformContext:
-    from api.messaging import make_sms_provider
+    from api.messaging import make_email_provider, make_sms_provider
     from api.platform.auth import RateLimiter
     from api.platform.db import Database
     from api.platform.secrets import make_cipher
     from api.platform.session_state import make_session_store
+    from api.telephony import make_dialer
 
     # Pool sizing is a throughput knob: 50 concurrent calls need more than
     # the dev default of 4 connections or tool calls queue on the pool
@@ -69,6 +82,8 @@ def _build_platform(database_url: str, admin_token: str | None) -> PlatformConte
             limit=int(os.getenv("CASELINE_RATE_LIMIT_PER_MINUTE", "300"))
         ),
         admin_token=admin_token,
+        email=make_email_provider(),
+        dialer=make_dialer(),
     )
 
 

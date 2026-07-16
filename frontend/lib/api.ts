@@ -87,3 +87,54 @@ export const getLatencyAnalytics = (days = 7) =>
   api(`/v1/analytics/latency?days=${days}`) as Promise<LatencyAnalytics>;
 export const putAgentConfig = (agentId: string, body: unknown) =>
   api(`/v1/agents/${agentId}/config`, { method: "PUT", body: JSON.stringify(body) });
+
+// --- Phase 3: omnichannel ---
+
+export type Thread = {
+  id: string;
+  channel: string;
+  address: string;
+  goal: string;
+  status: string;
+  closed_reason: string | null;
+  lead_id: string | null;
+  created_at: string;
+  updated_at: string;
+  last_inbound_at: string;
+  last_outbound_at: string;
+};
+
+export type ThreadDetail = Thread & {
+  state: Record<string, unknown>;
+  messages: { direction: string; body: string; ts: string }[];
+};
+
+export type ChaserAnalytics = {
+  days: number;
+  slo_seconds: number;
+  web_ad_leads: number;
+  contacted: number;
+  contact_rate: number | null;
+  first_contact_p50_seconds: number | null;
+  first_contact_p95_seconds: number | null;
+  under_60s_rate: number | null;
+};
+
+export type PreviewResult = {
+  turns: { role: string; text: string; guardrail_tripped?: string | null }[];
+  actions: Record<string, unknown>[];
+  closed_reason: string | null;
+  final_step: string | null;
+  instructions: string;
+};
+
+export const listThreads = () => api("/v1/threads") as Promise<Thread[]>;
+export const getThread = (id: string) =>
+  api(`/v1/threads/${encodeURIComponent(id)}`) as Promise<ThreadDetail>;
+export const getChaserAnalytics = (days = 30) =>
+  api(`/v1/analytics/chaser?days=${days}`) as Promise<ChaserAnalytics>;
+export const previewTestCall = (agentId: string, body: unknown) =>
+  api(`/v1/agents/${agentId}/preview`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  }) as Promise<PreviewResult>;

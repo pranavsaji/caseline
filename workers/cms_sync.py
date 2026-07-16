@@ -29,8 +29,6 @@ from integrations import CaseManagementProvider, Contact, Matter, Note, Task, ge
 
 logger = logging.getLogger("caseline.workers.cms_sync")
 
-CMS_TASK_EVENT_TYPES = {"call.completed", "consult.booked"}
-
 
 class EventProcessor:
     def __init__(
@@ -38,11 +36,20 @@ class EventProcessor:
         db: Database,
         cipher: SecretsCipher,
         provider_overrides: dict[str, CaseManagementProvider] | None = None,
+        extra_handlers: dict | None = None,
     ):
         self.db = db
         self.cipher = cipher
         # firm_id -> provider, for tests and for connection reuse
         self._providers: dict[str, CaseManagementProvider] = dict(provider_overrides or {})
+        # type -> handler. Phase 3 mounts the omnichannel handlers here so the
+        # outbox keeps exactly one consumer loop (no competing claimers).
+        self._handlers: dict = {
+            "call.completed": self._handle_call_completed,
+            "consult.booked": self._handle_consult_booked,
+            "tracker.update": self._handle_tracker_update,
+            **(extra_handlers or {}),
+        }
 
     # --- provider plumbing ---
 
@@ -181,6 +188,28 @@ class EventProcessor:
                 ),
             )
 
+    def _handle_tracker_update(self, event: events.Event) -> None:
+        """Treatment-tracker update -> a task in the firm's CMS (Phase 3)."""
+        payload = event.payload
+        provider = self._provider_for(event.firm_id)
+        who = payload.get("name") or payload.get("phone") or "client"
+        kind = payload.get("kind", "progress")
+        note = (payload.get("note") or "").strip()
+        matter = payload.get("matter_description")
+        detail = f"Treatment {kind} from {who}"
+        if matter:
+            detail += f" ({matter})"
+        if note:
+            detail += f": {note[:200]}"
+        with self.db.admin() as conn:
+            self._idempotent_write(
+                conn,
+                event.firm_id,
+                f"evt{event.id}:task",
+                f"{provider.name}:task",
+                lambda key: provider.create_task(Task(name=detail), None, key),
+            )
+
     # --- the loop ---
 
     def process_once(self, limit: int = 20) -> dict[str, int]:
@@ -193,15 +222,14 @@ class EventProcessor:
             batch = events.claim_pending(conn, limit=limit)
         for event in batch:
             try:
-                if event.type == "call.completed":
-                    self._handle_call_completed(event)
-                elif event.type == "consult.booked":
-                    self._handle_consult_booked(event)
+                handler = self._handlers.get(event.type)
+                if handler is not None:
+                    handler(event)
                 else:
                     counts["skipped"] += 1  # no consumer for this type yet
                 with self.db.admin() as conn:
                     events.mark_processed(conn, event.id)
-                if event.type in CMS_TASK_EVENT_TYPES:
+                if handler is not None:
                     counts["processed"] += 1
             except Exception as exc:  # noqa: BLE001 — worker must never die on one event
                 logger.warning("event %s failed (attempt %s): %s", event.id, event.attempts + 1, exc)
@@ -226,17 +254,28 @@ def main() -> None:
     dsn = os.environ["CASELINE_DATABASE_URL"]
     db = Database(dsn)
     db.migrate()
-    processor = EventProcessor(db, make_cipher())
+    # Phase 3: the omnichannel processor (chaser, threads, followups) mounts
+    # into the same consumer loop — the outbox keeps exactly one claimer.
+    from api.messaging import make_email_provider, make_sms_provider
+    from api.platform.session_state import make_session_store
+    from api.telephony import make_dialer
+    from workers.omnichannel import OmniProcessor
+
+    omni = OmniProcessor(
+        db, make_session_store(), make_sms_provider(), make_email_provider(), make_dialer()
+    )
+    processor = EventProcessor(db, make_cipher(), extra_handlers=omni.handlers())
     poll_seconds = float(os.getenv("CASELINE_WORKER_POLL_SECONDS", "1.0"))
     # Backpressure: the claim batch bounds in-flight work per poll; a flooded
     # outbox drains at a steady rate instead of ballooning worker memory.
     batch_size = int(os.getenv("CASELINE_WORKER_BATCH_SIZE", "20"))
     alert_every = max(int(float(os.getenv("CASELINE_ALERT_INTERVAL_SECONDS", "60")) / poll_seconds), 1)
-    logger.info("CMS sync worker polling every %.1fs (batch %s)", poll_seconds, batch_size)
+    logger.info("event worker polling every %.1fs (batch %s)", poll_seconds, batch_size)
     ticks = 0
     try:
         while True:
             counts = processor.process_once(limit=batch_size)
+            counts |= omni.process_due_followups(limit=batch_size)
             if any(counts.values()):
                 logger.info("batch: %s", counts)
             ticks += 1

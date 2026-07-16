@@ -3,8 +3,10 @@
 Phase 1 needs SMS only as a tool the agent can invoke (booking
 confirmations, follow-up links). ``LoggingSMSProvider`` is the local/dev
 default; ``TwilioSMSProvider`` is the real transport, config-selected.
-Full SMS *threads* (inbound, conversation policy) are Phase 3.
-"""
+Phase 3 adds full SMS *threads* (inbound webhook + conversation policy in
+``api/orchestration/threads.py``) and the email channel behind
+``EmailProvider`` — the thread engine is channel-agnostic and picks the
+transport per thread."""
 
 from __future__ import annotations
 
@@ -55,6 +57,62 @@ class TwilioSMSProvider(SMSProvider):
         )
         r.raise_for_status()
         return r.json()["sid"]
+
+
+class EmailProvider(ABC):
+    name: str
+
+    @abstractmethod
+    def send(self, to: str, subject: str, body: str) -> str:
+        """Send an email; returns a provider message id."""
+
+
+class LoggingEmailProvider(EmailProvider):
+    name = "logging"
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []  # inspectable by tests and local dev
+
+    def send(self, to: str, subject: str, body: str) -> str:
+        message_id = f"log-email-{len(self.sent) + 1}"
+        self.sent.append({"id": message_id, "to": to, "subject": subject, "body": body})
+        logger.info("EMAIL (logged, not sent) to=%s subject=%r", to, subject)
+        return message_id
+
+
+class SMTPEmailProvider(EmailProvider):
+    name = "smtp"
+
+    def __init__(self, host: str, port: int, username: str, password: str, from_address: str):
+        self._host, self._port = host, port
+        self._username, self._password = username, password
+        self._from = from_address
+
+    def send(self, to: str, subject: str, body: str) -> str:
+        import smtplib
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["From"], msg["To"], msg["Subject"] = self._from, to, subject
+        msg.set_content(body)
+        with smtplib.SMTP(self._host, self._port, timeout=10) as smtp:
+            smtp.starttls()
+            smtp.login(self._username, self._password)
+            smtp.send_message(msg)
+        return msg["Message-Id"] or f"smtp-{to}"
+
+
+def make_email_provider() -> EmailProvider:
+    host = os.getenv("CASELINE_SMTP_HOST")
+    if host:
+        return SMTPEmailProvider(
+            host=host,
+            port=int(os.getenv("CASELINE_SMTP_PORT", "587")),
+            username=os.getenv("CASELINE_SMTP_USERNAME", ""),
+            password=os.getenv("CASELINE_SMTP_PASSWORD", ""),
+            from_address=os.getenv("CASELINE_SMTP_FROM", "intake@caseline.app"),
+        )
+    return LoggingEmailProvider()
 
 
 def make_sms_provider() -> SMSProvider:

@@ -1,6 +1,6 @@
 # Caseline
 
-AI voice intake employee for law firms. Answers calls in a natural voice, qualifies leads against the firm's rules, books consults, and syncs structured records into the firm's case management system — with per-turn latency instrumentation and tenant isolation built in from the start.
+AI intake employee for law firms. Answers calls in a natural voice, qualifies leads against the firm's rules, books consults, and syncs structured records into the firm's case management system — and runs the same brain over SMS/email threads, chases webform leads within seconds (TCPA-compliant), and tracks signed clients' treatment — with per-turn latency instrumentation and tenant isolation built in from the start.
 
 - Architecture: [`caseline-voice-intake-architecture.md`](caseline-voice-intake-architecture.md)
 - Phased plan + progress tracking: [`plan.md`](plan.md)
@@ -12,6 +12,7 @@ AI voice intake employee for law firms. Answers calls in a natural voice, qualif
 | Phase 0 — Prototype (voice pipeline, mock CMS, latency instrumentation) | Code complete & tested; live-call validation blocked on provider credentials |
 | Phase 1 — Foundation (multi-tenant platform, per-firm config, guardrails, Clio, dashboard) | Code complete & tested (see plan.md for exit-criteria detail) |
 | Phase 2 — Hardening (failover, redaction, consent, classifier, analytics/alerts, Filevine+Litify, load test, IaC) | Code complete & tested; 50-call load test PASS; cloud apply blocked on GCP/provider accounts |
+| Phase 3 — Omnichannel (lead chaser, SMS/email threads, treatment tracker, config studio + preview) | Code complete & tested; live smoke PASS (lead-to-first-contact 0.6 s); real-transport verification blocked on Twilio/SIP/SMTP credentials |
 
 ## Stack
 
@@ -43,14 +44,19 @@ api/
   qualification.py        #   qualification rules engine (pure functions)
   tools/                  #   typed tool layer (deterministic; LLM only selects)
   orchestration/          #   per-firm agent config + 2-layer guardrails (regex + classifier)
-  compliance/             #   PII redaction pipeline + per-state consent policy
-  messaging/              #   SMS provider seam (Twilio / logging)
+                          #   + threads.py: the async SMS/email brain (pure state machine)
+  compliance/             #   PII redaction, per-state consent, TCPA outbound policy
+  messaging/              #   SMS + email provider seams (Twilio/SMTP / logging)
+  telephony.py            #   outbound dialer seam (LiveKit SIP / logging)
   platform/               #   db+RLS, migrations, events outbox, auth, secrets, alerts
   storage.py, schemas.py  #   Phase 0 prototype (SQLite) — kept for keyless local runs
 integrations/             # CaseManagementProvider ABC + normalized schema;
                           #   clio.py, filevine.py, litify.py, mock.py
-workers/cms_sync.py       # event consumer: idempotent CMS writes, retry + DLQ, alert loop
-frontend/                 # Next.js dashboard: calls/leads, transcript+latency, analytics, config
+workers/cms_sync.py       # the single event consumer loop: idempotent CMS writes,
+                          #   retry + DLQ, alert loop, omnichannel handlers + followups
+workers/omnichannel.py    # lead chaser, thread advancer, scheduled followups
+frontend/                 # Next.js dashboard: calls/leads, threads, analytics,
+                          #   config studio (+ test-call preview), raw config
 deploy/                   # Terraform (GCP) + Helm chart — written, not applied (no GCP account)
 compliance/               # SOC 2 groundwork, vendor inventory, security-review checklist
 scripts/onboard_firm.py   # CLI onboarding (firm + agent + service token)
@@ -73,7 +79,7 @@ cp .env.example .env          # then fill in what you need (see comments)
 uv run pytest -v
 ```
 
-135 tests: the qualification engine, every Phase 0 endpoint, latency stitching, the agent→backend contract, the Phase 1 platform — RLS cross-tenant isolation (against a real throwaway Postgres the suite boots itself), token auth + rate limiting, guardrails, typed tools, idempotency under fault injection, event retry/dead-letter/replay, the Clio adapter (mocked transport), a full simulated-firm end-to-end run — plus the Phase 2 hardening layer: PII redaction + scoped raw-transcript access, per-state consent, the inline guardrail classifier (with a <5 ms p95 perf gate), mid-call LLM failover chaos tests, concurrent-worker claim safety, DLQ replay + alert evaluation, analytics endpoints, and the Filevine/Litify adapters.
+172 tests: the qualification engine, every Phase 0 endpoint, latency stitching, the agent→backend contract, the Phase 1 platform — RLS cross-tenant isolation (against a real throwaway Postgres the suite boots itself), token auth + rate limiting, guardrails, typed tools, idempotency under fault injection, event retry/dead-letter/replay, the Clio adapter (mocked transport), a full simulated-firm end-to-end run — the Phase 2 hardening layer: PII redaction + scoped raw-transcript access, per-state consent, the inline guardrail classifier (with a <5 ms p95 perf gate), mid-call LLM failover chaos tests, concurrent-worker claim safety, DLQ replay + alert evaluation, analytics endpoints, the Filevine/Litify adapters — and the Phase 3 omnichannel layer: TCPA outbound policy (consent, quiet hours, STOP permanence), the thread brain (parsers, intake state machine, tracker), and webform→chaser→SMS→booking→CMS end-to-end with tenancy, nudges, and the zero-side-effect config preview.
 
 ## Run the platform (Phase 1)
 
@@ -101,6 +107,34 @@ CASELINE_API_URL=http://localhost:8000 CASELINE_FIRM_TOKEN=cl_... npm run dev
 ```
 
 **Telephony (marquee demo):** buy a Twilio number, point it at a LiveKit Cloud SIP inbound trunk, add a dispatch rule that routes to this agent. See architecture doc §7.3.
+
+## Try the omnichannel layer (Phase 3)
+
+With the backend + worker running and a firm token from onboarding:
+
+```bash
+# Webform lead -> the chaser texts back within ~1 s (logging SMS provider
+# prints the message; wire Twilio creds for real sends)
+curl -s -X POST localhost:8000/v1/hooks/leads \
+  -H "Authorization: Bearer cl_..." -H "Content-Type: application/json" \
+  -d '{"name":"Dana Torres","phone":"+15125550111","source":"web",
+       "sms_consent":true,"consent_source":"landing form"}'
+
+# Caller replies arrive as inbound SMS webhooks and advance the thread
+curl -s -X POST localhost:8000/v1/hooks/sms \
+  -H "Authorization: Bearer cl_..." -H "Content-Type: application/json" \
+  -d '{"from_number":"+15125550111","body":"It was on June 1"}'
+
+# Enroll a signed client in the treatment tracker
+curl -s -X POST localhost:8000/v1/tracker/enroll \
+  -H "Authorization: Bearer cl_..." -H "Content-Type: application/json" \
+  -d '{"name":"Sam Client","phone":"+15125550777","cadence_days":14}'
+```
+
+Dashboard: `/threads` (conversations + speed-to-lead), `/studio` (config forms
++ test-call preview that runs the same brain with zero side effects).
+Speed metric: `GET /v1/analytics/chaser`. STOP/HELP keywords are honored
+inline; no consent means no automated outbound, ever.
 
 ## Load test (Phase 2)
 
