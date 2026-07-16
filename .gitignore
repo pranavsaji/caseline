@@ -1,0 +1,18 @@
+# Environments & secrets
+.env
+.venv/
+credentials.json
+token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local data / intermediates
+*.db
+.tmp/
+
+# OS
+.DS_Store
