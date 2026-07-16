@@ -47,6 +47,7 @@ class PlatformContext:
     admin_token: str | None
     email: object = None  # EmailProvider (Phase 3); LoggingEmailProvider default
     dialer: object = None  # OutboundDialer (Phase 3); LoggingDialer default
+    voice_cloner: object = None  # VoiceCloneProvider (Phase 4); mock default
 
     def __post_init__(self) -> None:
         if self.email is None:
@@ -57,6 +58,10 @@ class PlatformContext:
             from api.telephony import LoggingDialer
 
             self.dialer = LoggingDialer()
+        if self.voice_cloner is None:
+            from api.voice import make_voice_clone_provider
+
+            self.voice_cloner = make_voice_clone_provider()
 
 
 def _build_platform(database_url: str, admin_token: str | None) -> PlatformContext:

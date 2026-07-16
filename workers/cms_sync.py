@@ -260,11 +260,16 @@ def main() -> None:
     from api.platform.session_state import make_session_store
     from api.telephony import make_dialer
     from workers.omnichannel import OmniProcessor
+    from workers.referrals import ReferralProcessor
 
     omni = OmniProcessor(
         db, make_session_store(), make_sms_provider(), make_email_provider(), make_dialer()
     )
-    processor = EventProcessor(db, make_cipher(), extra_handlers=omni.handlers())
+    # Phase 4: smart referrals consume lead.qualified in the same loop.
+    referrals = ReferralProcessor(db)
+    processor = EventProcessor(
+        db, make_cipher(), extra_handlers={**omni.handlers(), **referrals.handlers()}
+    )
     poll_seconds = float(os.getenv("CASELINE_WORKER_POLL_SECONDS", "1.0"))
     # Backpressure: the claim batch bounds in-flight work per poll; a flooded
     # outbox drains at a steady rate instead of ballooning worker memory.

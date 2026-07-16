@@ -320,8 +320,18 @@ async def entrypoint(ctx: JobContext) -> None:
     # from_number (when telephony provides it) drives per-state consent.
     from_number = os.getenv("CASELINE_TEST_FROM_NUMBER")  # SIP attrs land here later
     config = await backend.get_agent_config(from_number=from_number)
+    # Phase 4: voice_id may be a cloned per-firm voice (voice_profiles ->
+    # agents.voice_id); the TTS stage doesn't care where the id came from.
     voice_id = (config or {}).get("voice_id") or os.getenv("CARTESIA_VOICE_ID") or None
     greeting = ((config or {}).get("script") or {}).get("greeting") or DEFAULT_GREETING
+
+    # Phase 4: selective S2S is evidence-gated (agent/s2s.py). Until a live
+    # benchmark verdict justifies it, the greeting rides the cascaded
+    # pipeline like every other turn — this logs which path is serving.
+    from agent.s2s import plan_greeting
+
+    greeting_plan = plan_greeting()
+    logger.info("greeting mode: %s (%s)", greeting_plan.mode, greeting_plan.reason)
 
     # Phase 2: each stage is a failover stack (primary + optional fallbacks
     # behind a health-check driven FallbackAdapter — mid-call cutover).

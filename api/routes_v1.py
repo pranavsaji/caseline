@@ -33,15 +33,20 @@ from api.platform import auth
 from api.platform import events as platform_events
 from api.platform.schemas import (
     AgentConfigUpdate,
+    AssignVoiceRequest,
     CompleteCallRequest,
     CreateFirmRequest,
     CreateFirmResponse,
     CreateTokenRequest,
     CreateTokenResponse,
     InboundSMSRequest,
+    LeadReviewRequest,
     LeadWebhookRequest,
     LookupCallerRequest,
     PreviewRequest,
+    ReferralPartnerCreate,
+    ReferralSendRequest,
+    ReferralStatusRequest,
     SendSMSRequest,
     TakeMessageRequest,
     ToolQualifyRequest,
@@ -50,6 +55,7 @@ from api.platform.schemas import (
     TranscriptRequest,
     TransferRequest,
     TurnMetricsV1,
+    VoiceProfileCreate,
 )
 
 logger = logging.getLogger("caseline.api.v1")
@@ -947,3 +953,345 @@ def list_events(
         {**r, "created_at": str(r["created_at"]), "processed_at": str(r["processed_at"] or "")}
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — differentiation: voice cloning, qualification tuning, smart
+# referrals, benchmark analytics
+# ---------------------------------------------------------------------------
+
+
+@router.post("/voice-profiles")
+def create_voice_profile(
+    req: VoiceProfileCreate, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Create a branded voice for the firm. The clone provider runs off the
+    hot path (this is an onboarding action, not a call action); the profile
+    only becomes assignable once the provider returns a voice id."""
+    from api.voice import VoiceCloneError
+
+    if not req.consent_confirmed:
+        raise HTTPException(
+            status_code=422,
+            detail="Voice cloning requires the voice owner's recorded consent"
+            " (consent_confirmed=true)",
+        )
+    p = _platform(request)
+    cloner = p.voice_cloner
+    with p.db.firm(firm.firm_id) as conn:
+        row = conn.execute(
+            "INSERT INTO voice_profiles (firm_id, name, provider, sample_uri, consent_confirmed)"
+            " VALUES (%s, %s, %s, %s, true) RETURNING id",
+            (firm.firm_id, req.name, cloner.name, req.sample_uri),
+        ).fetchone()
+    profile_id = str(row["id"])
+    try:
+        voice_id = cloner.create_voice(req.name, req.sample_uri, req.description)
+    except VoiceCloneError as exc:
+        with p.db.firm(firm.firm_id) as conn:
+            conn.execute(
+                "UPDATE voice_profiles SET status = 'failed', error = %s, updated_at = now()"
+                " WHERE id = %s",
+                (str(exc)[:2000], profile_id),
+            )
+        raise HTTPException(status_code=502, detail=f"Voice clone failed: {exc}") from exc
+    with p.db.firm(firm.firm_id) as conn:
+        conn.execute(
+            "UPDATE voice_profiles SET status = 'ready', provider_voice_id = %s,"
+            " updated_at = now() WHERE id = %s",
+            (voice_id, profile_id),
+        )
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "voice.profile_ready",
+            {"voice_profile_id": profile_id, "provider": cloner.name, "name": req.name},
+        )
+    return {"voice_profile_id": profile_id, "status": "ready", "provider_voice_id": voice_id}
+
+
+@router.get("/voice-profiles")
+def list_voice_profiles(
+    request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> list[dict]:
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        rows = conn.execute(
+            "SELECT id, name, provider, provider_voice_id, status, sample_uri, error, created_at"
+            " FROM voice_profiles ORDER BY created_at DESC"
+        ).fetchall()
+    return [{**r, "id": str(r["id"]), "created_at": str(r["created_at"])} for r in rows]
+
+
+@router.post("/agents/{agent_id}/voice")
+def assign_agent_voice(
+    agent_id: str,
+    req: AssignVoiceRequest,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Point an agent at a ready voice profile. Goes through
+    update_agent_config so the config cache invalidates and the very next
+    call speaks in the firm's voice."""
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        profile = conn.execute(
+            "SELECT status, provider_voice_id FROM voice_profiles WHERE id = %s",
+            (req.voice_profile_id,),
+        ).fetchone()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Voice profile not found")
+    if profile["status"] != "ready" or not profile["provider_voice_id"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Voice profile is {profile['status']}; only ready voices reach callers",
+        )
+    updated = update_agent_config(
+        p.db, p.session_store, firm.firm_id, agent_id, voice_id=profile["provider_voice_id"]
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"status": "assigned", "voice_id": profile["provider_voice_id"]}
+
+
+@router.post("/leads/{lead_id}/review")
+def review_lead(
+    lead_id: str,
+    req: LeadReviewRequest,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Record the attorney's accept/reject verdict on a lead — the training
+    signal for qualification tuning. Re-reviewing overwrites the verdict."""
+    if req.verdict not in ("accepted", "rejected"):
+        raise HTTPException(status_code=422, detail="verdict must be 'accepted' or 'rejected'")
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        lead = conn.execute("SELECT id FROM leads WHERE id = %s", (lead_id,)).fetchone()
+        if lead is None:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        conn.execute(
+            "INSERT INTO lead_reviews (firm_id, lead_id, verdict, reviewer, reason)"
+            " VALUES (%s, %s, %s, %s, %s)"
+            " ON CONFLICT (firm_id, lead_id) DO UPDATE SET verdict = EXCLUDED.verdict,"
+            " reviewer = EXCLUDED.reviewer, reason = EXCLUDED.reason, updated_at = now()",
+            (firm.firm_id, lead_id, req.verdict, req.reviewer, req.reason),
+        )
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "lead.reviewed",
+            {"lead_id": lead_id, "verdict": req.verdict, "reviewer": req.reviewer},
+        )
+    return {"status": "recorded", "lead_id": lead_id, "verdict": req.verdict}
+
+
+@router.get("/tuning/suggestions")
+def tuning_suggestions(
+    request: Request, days: int = 90, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Compare attorney verdicts against engine decisions and propose rule
+    edits. Suggestions are advisory: a human applies proposed_rules through
+    the same validated config PUT every other edit uses."""
+    from api import tuning
+
+    days = min(max(days, 1), 365)
+    p = _platform(request)
+    config = load_agent_config(p.db, p.session_store, firm.firm_id)
+    if config is None:
+        raise HTTPException(status_code=409, detail="Firm has no configured agent")
+    with p.db.firm(firm.firm_id) as conn:
+        rows = conn.execute(
+            "SELECT r.verdict, l.qualification, l.created_at"
+            " FROM lead_reviews r JOIN leads l ON l.id = r.lead_id"
+            " WHERE r.created_at > now() - make_interval(days => %s)"
+            "   AND l.qualification IS NOT NULL",
+            (days,),
+        ).fetchall()
+    samples = [
+        tuning.sample_from_row(r["verdict"], r["qualification"], r["created_at"].date())
+        for r in rows
+    ]
+    report = tuning.analyze_reviews(samples, config.qualification)
+    return {
+        "days": days,
+        "reviews": report.reviews,
+        "agreement_rate": report.agreement_rate,
+        "matrix": report.matrix,
+        "suggestions": [
+            {"kind": s.kind, "detail": s.detail, "evidence": s.evidence}
+            for s in report.suggestions
+        ],
+        "current_rules": config.qualification.model_dump(),
+        "proposed_rules": report.proposed_rules,
+    }
+
+
+@router.post("/referral-partners")
+def create_referral_partner(
+    req: ReferralPartnerCreate, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Register a partner firm. Registering partners is the opt-in switch for
+    smart referrals — no partners, no proposals."""
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        row = conn.execute(
+            "INSERT INTO referral_partners"
+            " (firm_id, name, practice_areas, states, contact_email, contact_phone, notes)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (
+                firm.firm_id,
+                req.name,
+                req.practice_areas,
+                [s.upper() for s in req.states],
+                req.contact_email,
+                req.contact_phone,
+                req.notes,
+            ),
+        ).fetchone()
+    return {"partner_id": str(row["id"]), "status": "created"}
+
+
+@router.get("/referral-partners")
+def list_referral_partners(
+    request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> list[dict]:
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        rows = conn.execute(
+            "SELECT id, name, practice_areas, states, contact_email, contact_phone,"
+            "       active, notes, created_at"
+            " FROM referral_partners ORDER BY created_at"
+        ).fetchall()
+    return [{**r, "id": str(r["id"]), "created_at": str(r["created_at"])} for r in rows]
+
+
+@router.get("/referrals")
+def list_referrals(
+    request: Request, limit: int = 50, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> list[dict]:
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        rows = conn.execute(
+            "SELECT rf.id, rf.lead_id, rf.status, rf.match_reasons, rf.client_consent,"
+            "       rf.sent_at, rf.created_at, rp.name AS partner_name,"
+            "       c.name AS contact_name, l.practice_area"
+            " FROM referrals rf"
+            " JOIN referral_partners rp ON rp.id = rf.partner_id"
+            " JOIN leads l ON l.id = rf.lead_id"
+            " LEFT JOIN contacts c ON c.id = l.contact_id"
+            " ORDER BY rf.created_at DESC LIMIT %s",
+            (min(limit, 200),),
+        ).fetchall()
+    return [
+        {
+            **r,
+            "id": str(r["id"]),
+            "lead_id": str(r["lead_id"]),
+            "sent_at": str(r["sent_at"]) if r["sent_at"] else None,
+            "created_at": str(r["created_at"]),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/referrals/{referral_id}/send")
+def send_referral(
+    referral_id: str,
+    req: ReferralSendRequest,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Human send action. Client case facts leave the system only here, and
+    only with the client's consent recorded — the AI proposes, a person
+    shares."""
+    from api.referrals import build_packet, packet_email_body
+
+    if not req.client_consent:
+        raise HTTPException(
+            status_code=422,
+            detail="Sending a referral requires the client's recorded consent"
+            " (client_consent=true)",
+        )
+    p = _platform(request)
+    config = load_agent_config(p.db, p.session_store, firm.firm_id)
+    firm_name = config.firm_name if config else "A partner firm"
+    with p.db.firm(firm.firm_id) as conn:
+        referral = conn.execute(
+            "SELECT rf.id, rf.lead_id, rf.status, rf.match_reasons,"
+            "       rp.name AS partner_name, rp.contact_email"
+            " FROM referrals rf JOIN referral_partners rp ON rp.id = rf.partner_id"
+            " WHERE rf.id = %s",
+            (referral_id,),
+        ).fetchone()
+        if referral is None:
+            raise HTTPException(status_code=404, detail="Referral not found")
+        if referral["status"] != "proposed":
+            raise HTTPException(
+                status_code=409, detail=f"Referral is already {referral['status']}"
+            )
+        packet = build_packet(conn, firm.firm_id, referral["lead_id"])
+        conn.execute(
+            "UPDATE referrals SET status = 'sent', client_consent = true, packet = %s,"
+            " sent_at = now(), updated_at = now() WHERE id = %s",
+            (json.dumps(packet), referral_id),
+        )
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "referral.sent",
+            {"referral_id": referral_id, "lead_id": str(referral["lead_id"])},
+        )
+    if referral["contact_email"]:
+        p.email.send(
+            referral["contact_email"],
+            f"Case referral from {firm_name}",
+            packet_email_body(firm_name, packet, referral["match_reasons"] or []),
+        )
+    return {"status": "sent", "referral_id": referral_id}
+
+
+@router.post("/referrals/{referral_id}/status")
+def update_referral_status(
+    referral_id: str,
+    req: ReferralStatusRequest,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Track the partner's answer so the firm sees which partners convert."""
+    if req.status not in ("accepted", "declined"):
+        raise HTTPException(status_code=422, detail="status must be 'accepted' or 'declined'")
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        row = conn.execute(
+            "UPDATE referrals SET status = %s, updated_at = now()"
+            " WHERE id = %s AND status = 'sent' RETURNING lead_id",
+            (req.status, referral_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(
+                status_code=409, detail="Referral not found or not in 'sent' state"
+            )
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "referral.resolved",
+            {"referral_id": referral_id, "lead_id": str(row["lead_id"]), "status": req.status},
+        )
+    return {"status": req.status, "referral_id": referral_id}
+
+
+@router.get("/analytics/benchmarks")
+def analytics_benchmarks(
+    request: Request, days: int = 30, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """The firm's intake funnel against an anonymized peer cohort. Cohort
+    stats are k-anonymity gated and carry no peer identifiers — the
+    cross-firm aggregation happens platform-side by design (this is the
+    analytics product), but only aggregates ever leave it."""
+    from api import benchmarks
+
+    days = min(max(days, 1), 365)
+    p = _platform(request)
+    funnels = benchmarks.collect_funnels(p.db, days)
+    return benchmarks.benchmark_report(funnels, firm.firm_id, days)

@@ -138,3 +138,83 @@ export const previewTestCall = (agentId: string, body: unknown) =>
     method: "POST",
     body: JSON.stringify(body),
   }) as Promise<PreviewResult>;
+
+// --- Phase 4: differentiation ---
+
+export type BenchmarkMetric = {
+  label: string;
+  own: number | null;
+  higher_is_better: boolean;
+  cohort: { p25: number; p50: number; p75: number; firms: number } | null;
+  percentile_rank: number | null;
+};
+
+export type BenchmarkReport = {
+  days: number;
+  own_leads: number;
+  cohort_firms: number;
+  suppressed: boolean;
+  suppressed_reason: string | null;
+  metrics: Record<string, BenchmarkMetric>;
+};
+
+export type TuningSuggestion = {
+  kind: string;
+  detail: string;
+  evidence: Record<string, unknown>;
+};
+
+export type TuningReport = {
+  days: number;
+  reviews: number;
+  agreement_rate: number | null;
+  matrix: Record<string, Record<string, number>>;
+  suggestions: TuningSuggestion[];
+  current_rules: Record<string, unknown>;
+  proposed_rules: Record<string, unknown> | null;
+};
+
+export type Referral = {
+  id: string;
+  lead_id: string;
+  status: string;
+  match_reasons: string[];
+  client_consent: boolean;
+  sent_at: string | null;
+  created_at: string;
+  partner_name: string;
+  contact_name: string | null;
+  practice_area: string | null;
+};
+
+export type ReferralPartner = {
+  id: string;
+  name: string;
+  practice_areas: string[];
+  states: string[];
+  contact_email: string | null;
+  contact_phone: string | null;
+  active: boolean;
+  notes: string | null;
+  created_at: string;
+};
+
+export type VoiceProfile = {
+  id: string;
+  name: string;
+  provider: string;
+  provider_voice_id: string | null;
+  status: string;
+  sample_uri: string | null;
+  error: string | null;
+  created_at: string;
+};
+
+export const getBenchmarks = (days = 30) =>
+  api(`/v1/analytics/benchmarks?days=${days}`) as Promise<BenchmarkReport>;
+export const getTuningSuggestions = (days = 90) =>
+  api(`/v1/tuning/suggestions?days=${days}`) as Promise<TuningReport>;
+export const listReferrals = () => api("/v1/referrals") as Promise<Referral[]>;
+export const listReferralPartners = () =>
+  api("/v1/referral-partners") as Promise<ReferralPartner[]>;
+export const listVoiceProfiles = () => api("/v1/voice-profiles") as Promise<VoiceProfile[]>;

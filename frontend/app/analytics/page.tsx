@@ -1,4 +1,4 @@
-import { getLatencyAnalytics, getOutcomeAnalytics } from "@/lib/api";
+import { getBenchmarks, getLatencyAnalytics, getOutcomeAnalytics } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
@@ -13,9 +13,10 @@ function SloPill({ p95, slo }: { p95: number | null; slo: number }) {
 }
 
 export default async function Analytics() {
-  const [outcomes, latency] = await Promise.all([
+  const [outcomes, latency, benchmarks] = await Promise.all([
     getOutcomeAnalytics(30),
     getLatencyAnalytics(7),
+    getBenchmarks(30),
   ]);
 
   const stats: [string, string][] = [
@@ -105,6 +106,47 @@ export default async function Analytics() {
                 <td>{Math.round(p.llm_ttft_p95_ms)} ms</td>
                 <td>{Math.round(p.tts_ttfb_p95_ms)} ms</td>
                 <td><SloPill p95={p.total_p95_ms} slo={latency.slo_ms} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2>Peer benchmarks (last {benchmarks.days} days)</h2>
+      {benchmarks.suppressed ? (
+        <div className="empty">
+          {benchmarks.suppressed_reason ??
+            "Benchmarks unlock once enough peer firms are active."}
+        </div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Your firm</th>
+              <th>Cohort p25</th>
+              <th>Cohort median</th>
+              <th>Cohort p75</th>
+              <th>Your percentile</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(benchmarks.metrics).map(([key, m]) => (
+              <tr key={key}>
+                <td>{m.label}</td>
+                <td>{m.own ?? "—"}</td>
+                <td>{m.cohort?.p25 ?? "—"}</td>
+                <td>{m.cohort?.p50 ?? "—"}</td>
+                <td>{m.cohort?.p75 ?? "—"}</td>
+                <td>
+                  {m.percentile_rank == null ? (
+                    <span className="pill muted">no data</span>
+                  ) : (
+                    <span className={`pill ${m.percentile_rank >= 0.5 ? "ok" : "warn"}`}>
+                      {Math.round(m.percentile_rank * 100)}th
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

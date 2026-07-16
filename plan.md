@@ -4,11 +4,11 @@
 
 | Phase | Status | Last updated |
 |---|---|---|
-| Phase 0 — Prototype | ✅ **Code complete & verified** — every engineering item done and re-verified (now under the 172-test suite); the only open items are external account provisioning (LiveKit/Twilio/provider keys), which no code change can close | 2026-07-16 |
-| Phase 1 — Foundation | ✅ **Code complete & verified** — all four workstreams built and re-verified under the 172-test suite; open items are the same account blockers + a real Clio sandbox | 2026-07-16 |
-| Phase 2 — Hardening | ✅ **Code complete & verified** — all five workstreams built and re-verified under the 172-test suite; 50-call load test PASS with zero duplicate CMS writes; chaos-tested failover; 3 CMS adapters; open items are accounts/infra only (GCP apply, provider keys, CMS sandboxes) — same blocker class as Phases 0/1 — see §Phase 2 Progress | 2026-07-16 |
-| Phase 3 — Omnichannel | ✅ **Code complete & verified** — chaser, SMS/email threads, treatment tracker, config studio + preview all built on the Phase 1 brain; 172 tests green (37 new); live HTTP smoke PASS with lead-to-first-contact 0.6 s; open items are live-transport verification (Twilio SMS/SIP) — see §Phase 3 Progress | 2026-07-16 |
-| Phase 4 — Differentiation | ⚪ Not started | — |
+| Phase 0 — Prototype | ✅ **Code complete & verified** — every engineering item done and re-verified (now under the 217-test suite, re-run 2026-07-16 during Phase 4); the only open items are external account provisioning (LiveKit/Twilio/provider keys), which no code change can close | 2026-07-16 |
+| Phase 1 — Foundation | ✅ **Code complete & verified** — all four workstreams built and re-verified under the 217-test suite; open items are the same account blockers + a real Clio sandbox | 2026-07-16 |
+| Phase 2 — Hardening | ✅ **Code complete & verified** — all five workstreams built and re-verified under the 217-test suite; 50-call load test PASS with zero duplicate CMS writes; chaos-tested failover; 3 CMS adapters; open items are accounts/infra only (GCP apply, provider keys, CMS sandboxes) — same blocker class as Phases 0/1 — see §Phase 2 Progress | 2026-07-16 |
+| Phase 3 — Omnichannel | ✅ **Code complete & verified** — chaser, SMS/email threads, treatment tracker, config studio + preview all built on the Phase 1 brain; re-verified under the 217-test suite; live HTTP smoke PASS with lead-to-first-contact 0.6 s; open items are live-transport verification (Twilio SMS/SIP) — see §Phase 3 Progress | 2026-07-16 |
+| Phase 4 — Differentiation | ✅ **Code complete & verified** — consent-gated voice cloning, qualification tuning from attorney verdicts, smart referrals with a human/consent send gate, k-anonymous benchmark analytics, and an evidence-gated S2S greeting path + benchmark harness; 217 tests green (43 new); live HTTP smoke 12/12 PASS; open items are live-account verification only (Cartesia clone, realtime S2S trials, referral email over real SMTP) — see §Phase 4 Progress | 2026-07-16 |
 
 Execution plan for the architecture defined in `caseline-voice-intake-architecture.md`. Written from the principal-architect seat: each phase has a single risk it exists to retire, hard exit criteria, and an explicit "not in this phase" list. Phases are gates, not calendar promises — you do not start Phase N+1 until Phase N's exit criteria are demonstrably true.
 
@@ -349,6 +349,53 @@ Only after the core is boringly reliable:
 - **Smart referrals** — route declined-but-viable cases to partner firms (product + marketplace motion, not just engineering).
 - **Analytics product** — intake funnel benchmarks firms will pay for on their own.
 - **Selective speech-to-speech** — revisit S2S for the greeting segment only, keeping cascading for the qualification body, if realism benchmarks justify it.
+
+### ✅ Progress — updated 2026-07-16
+
+**Code complete. 217 tests green (`uv run pytest`): the Phase 0–3 suite unchanged + 43 new. Live-validated over real HTTP (uvicorn + ephemeral Postgres + the real `cms_sync` worker process): consent-gated voice clone → agent assignment → agent-config carries the voice; 5 attorney rejections → tuning suggestion → applied rules flip the next decision to refer_out; refer_out lead → worker proposes referral → consent-gated send → partner outcome tracked; benchmarks suppressed at 2 peers, reported at 3 — **12/12 smoke checks PASS**. `next build` clean with the new tuning/referrals pages. Migration 0004 adds `voice_profiles`, `lead_reviews`, `referral_partners`, `referrals` — RLS + grants same posture as every other tenant table, cross-tenant tested.**
+
+**Per-firm voice cloning:**
+
+- [x] `VoiceCloneProvider` seam (`api/voice.py`): Cartesia adapter (mocked-transport tested, same posture as the CMS adapters) + mock local default; provider names stay in adapter code and config (cross-phase rule)
+- [x] **Consent is structural**: `POST /v1/voice-profiles` refuses without `consent_confirmed`, and the table CHECK refuses again even from code — cloning a voice whose owner has not agreed is a non-starter
+- [x] Only `ready` profiles are assignable (`POST /v1/agents/{id}/voice` → 409 otherwise); assignment flows through `update_agent_config`, so the cache invalidates and the very next call speaks the firm's voice — the worker's existing `voice_id` plumbing needed zero changes
+- [x] Provider failure → profile marked `failed` with the error, 502 to the caller, nothing assignable
+- ⚠️ Real Cartesia clone verification needs the API key (same Phase 0 blocker class)
+
+**Per-firm qualification tuning:**
+
+- [x] `POST /v1/leads/{id}/review`: attorney accept/reject verdicts (one per lead, re-review overwrites), emitted as `lead.reviewed` audit events
+- [x] Deterministic suggestion engine (`api/tuning.py`, pure functions): engine-vs-attorney confusion matrix + agreement rate; add/remove refer-out-injury suggestions and a tighten-only SOL-gate suggestion, all sample-gated (5+) and threshold-gated (80%) — **suggestions are advisory; a human applies `proposed_rules` through the same validated config PUT every other edit uses**, closing the loop end-to-end in tests (applied rules flip the next decision)
+- [x] Fine-tune vs RAG evaluation (the plan asks): deterministic rule tuning chosen — decisions must stay explainable for legal review, per-firm verdict volume is fine-tune starvation territory, and the rules engine is the seam we already have. Revisit an LLM-assisted extractor when verdict volume supports holdout evaluation; the suggestion interface wouldn't change
+- [x] Dashboard `/tuning` page: matrix, agreement, suggestions, proposed rules
+
+**Smart referrals:**
+
+- [x] "Declined-but-viable" = `refer_out` (real case, firm won't take it); hard declines (blown SOL) are never referred
+- [x] Partner registry (`/v1/referral-partners`) — registering partners **is** the opt-in: no partners, no proposals; deterministic matcher (explicit practice-area match beats wildcard, caller-state match breaks ties, using the consent state Phase 2 already records on calls)
+- [x] Event-driven proposal: `lead.qualified` consumer (`workers/referrals.py`) mounts into the same single outbox loop; `UNIQUE (firm_id, lead_id)` makes event retries idempotent (tested)
+- [x] **The AI proposes, a person shares**: client case facts leave the system only via `POST /v1/referrals/{id}/send` with `client_consent=true` recorded (422 without); packet is case facts only (no transcript, no internal notes), emailed via the existing `EmailProvider` seam; partner outcomes tracked (`sent` → `accepted`/`declined`) so firms see which partners convert
+- [x] Dashboard `/referrals` page: referrals + partner network
+
+**Analytics product (benchmarks):**
+
+- [x] `GET /v1/analytics/benchmarks`: the firm's funnel (qualification rate, booking rate, speed-to-lead p50, turn-latency p95) vs an anonymized peer cohort — cohort p25/p50/p75 + the firm's percentile rank per metric
+- [x] Privacy enforced and tested: **k-anonymity** (suppressed below 3 peer firms with activity — with two peers, "the cohort median" is just your competitor's number) and **aggregates only** (no peer id/name/row data in any response; asserted in tests and the live smoke)
+- [x] Cross-firm aggregation runs platform-side by design (it *is* the product); dashboard analytics page grew a peer-benchmarks section
+
+**Selective speech-to-speech:**
+
+- [x] Evidence gate (`agent/s2s.py`): the greeting is served S2S only behind explicit opt-in (`CASELINE_S2S_GREETING`) **and** a configured provider **and** a benchmark verdict file with a human-confirmed realism win — every unmet precondition falls back to cascaded with the reason logged at call start. Default: cascaded, like every other turn
+- [x] Benchmark harness (`scripts/s2s_benchmark.py`): cascaded (LLM TTFT + TTS TTFB) vs realtime time-to-first-audio over N trials; writes the verdict file with `realism_win: null` — latency is measured, realism is judged by a human listening, and the gate refuses S2S until someone does
+- [x] The qualification body stays cascaded unconditionally (guardrails, transcripts, failover are non-negotiable) — S2S, if it ever ships, touches the greeting segment only
+- ⚠️ Running the benchmark needs live provider keys (OpenAI realtime + the cascaded stack) — same blocker class as Phase 0
+
+**Remaining for Phase 4 (accounts/keys, not code):**
+
+- [ ] Cartesia key → verify a real voice clone end-to-end and A/B the branded voice on live calls
+- [ ] Provider keys → run `scripts/s2s_benchmark.py`, human listening review, set `realism_win`
+- [ ] SMTP credentials → referral packet email over a real transport (logging provider verified locally)
+- [ ] Volume: tuning suggestions and benchmarks get meaningful once real firms generate verdicts and traffic (thresholds are deliberately conservative until then)
 
 ---
 

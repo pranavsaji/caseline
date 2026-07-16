@@ -17,6 +17,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <Link href="/">Calls &amp; Leads</Link>
             <Link href="/threads">Threads</Link>
             <Link href="/analytics">Analytics</Link>
+            <Link href="/tuning">Tuning</Link>
+            <Link href="/referrals">Referrals</Link>
             <Link href="/studio">Config Studio</Link>
             <Link href="/config">Agent Config</Link>
           </nav>

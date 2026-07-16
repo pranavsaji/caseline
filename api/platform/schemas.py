@@ -159,6 +159,51 @@ class PreviewRequest(BaseModel):
     guardrails: dict | None = None
 
 
+# --- Phase 4: differentiation ---
+
+
+class VoiceProfileCreate(BaseModel):
+    """Branded/cloned voice request. Consent is structural: the API refuses
+    without it and the schema CHECK refuses again."""
+
+    name: str
+    sample_uri: str
+    consent_confirmed: bool = False
+    description: str | None = None
+
+
+class AssignVoiceRequest(BaseModel):
+    voice_profile_id: str
+
+
+class LeadReviewRequest(BaseModel):
+    """Attorney verdict on a lead — the qualification-tuning signal."""
+
+    verdict: str  # accepted | rejected
+    reviewer: str | None = None
+    reason: str | None = None
+
+
+class ReferralPartnerCreate(BaseModel):
+    name: str
+    practice_areas: list[str] = Field(default_factory=list)
+    states: list[str] = Field(default_factory=list)
+    contact_email: str | None = None
+    contact_phone: str | None = None
+    notes: str | None = None
+
+
+class ReferralSendRequest(BaseModel):
+    """Human send action: client PII leaves the system only here, and only
+    with the client's consent recorded."""
+
+    client_consent: bool = False
+
+
+class ReferralStatusRequest(BaseModel):
+    status: str  # accepted | declined
+
+
 class TurnMetricsV1(BaseModel):
     call_id: str
     speech_id: str
