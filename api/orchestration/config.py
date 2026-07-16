@@ -56,6 +56,8 @@ class ScriptConfig(BaseModel):
     practice_area: str = "personal injury"
     recording_disclosure: bool = True
     extra_instructions: str = ""
+    # Two-letter state the firm operates in; drives per-state consent rules.
+    firm_state: str | None = None
 
 
 class QualificationRules(BaseModel):

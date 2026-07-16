@@ -54,7 +54,11 @@ def _build_platform(database_url: str, admin_token: str | None) -> PlatformConte
     from api.platform.secrets import make_cipher
     from api.platform.session_state import make_session_store
 
-    db = Database(database_url)
+    # Pool sizing is a throughput knob: 50 concurrent calls need more than
+    # the dev default of 4 connections or tool calls queue on the pool
+    # (measured: qualify_lead p95 went 799ms -> ~100ms at pool 20 under a
+    # 50-call load test).
+    db = Database(database_url, pool_size=int(os.getenv("CASELINE_DB_POOL_SIZE", "4")))
     db.migrate()
     return PlatformContext(
         db=db,
@@ -75,7 +79,11 @@ def create_app(
     platform: PlatformContext | None = None,
 ) -> FastAPI:
     load_dotenv()
-    app = FastAPI(title="Caseline Backend", version="0.2.0")
+    # PII never reaches log sinks un-redacted (Phase 2 compliance pipeline).
+    from api.compliance.redaction import install_log_redaction
+
+    install_log_redaction()
+    app = FastAPI(title="Caseline Backend", version="0.3.0")
     app.state.store = Store(db_path or os.getenv("CASELINE_DB", "caseline.db"))
 
     database_url = database_url or os.getenv("CASELINE_DATABASE_URL")

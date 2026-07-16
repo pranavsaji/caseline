@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caseline-cms-sync
+  labels: { app: caseline-cms-sync }
+spec:
+  # Scaling out is safe: the events claim protocol is concurrent-worker safe
+  # (processing status + visibility timeout, proven under race in tests).
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels: { app: caseline-cms-sync }
+  template:
+    metadata:
+      labels: { app: caseline-cms-sync }
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["python", "-m", "workers.cms_sync"]
+          envFrom:
+            - secretRef: { name: {{ .Values.envFromSecret }} }
+          env:
+            {{- range $k, $v := .Values.worker.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}

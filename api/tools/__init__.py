@@ -256,6 +256,8 @@ def complete_call(
     outcome: str | None = None,
     caller_type: str | None = None,
     from_number: str | None = None,
+    consent_state: str | None = None,
+    two_party_consent: bool | None = None,
 ) -> dict:
     """Persist the call outcome and emit ``call.completed``. The CMS write is
     performed by the async worker consuming that event — never inline
@@ -278,11 +280,12 @@ def complete_call(
                 ).fetchone()["id"]
         conn.execute(
             "INSERT INTO calls (id, firm_id, agent_id, from_number, ended_at, outcome,"
-            " caller_type, summary, structured)"
-            " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s)"
+            " caller_type, summary, structured, consent_state, two_party_consent)"
+            " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (firm_id, id) DO UPDATE SET ended_at = now(), outcome = EXCLUDED.outcome,"
             " caller_type = EXCLUDED.caller_type, summary = EXCLUDED.summary,"
-            " structured = EXCLUDED.structured",
+            " structured = EXCLUDED.structured, consent_state = EXCLUDED.consent_state,"
+            " two_party_consent = EXCLUDED.two_party_consent",
             (
                 call_id,
                 ctx.firm_id,
@@ -292,6 +295,8 @@ def complete_call(
                 caller_type,
                 summary,
                 json.dumps(structured),
+                consent_state,
+                two_party_consent,
             ),
         )
         if contact_id is not None:

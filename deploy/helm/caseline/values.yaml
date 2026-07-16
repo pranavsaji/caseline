@@ -1,0 +1,47 @@
+# Caseline Helm values. STATUS: written, not deployed (no GKE cluster yet).
+# Secrets (DATABASE_URL, provider API keys, CASELINE_SECRETS_KEY / KMS name,
+# admin token) come from an ExternalSecret / Secret named in envFromSecret —
+# never from this file.
+
+image:
+  repository: us-central1-docker.pkg.dev/PROJECT/caseline/caseline
+  tag: latest
+
+envFromSecret: caseline-secrets
+
+api:
+  replicas: 3
+  port: 8000
+  env:
+    CASELINE_DB_POOL_SIZE: "20"          # sized with the 50-call load test
+    CASELINE_RATE_LIMIT_PER_MINUTE: "3000" # >= expected tool-calls/min per token
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { cpu: "2", memory: 1Gi }
+
+worker: # CMS sync / event consumer
+  replicas: 2 # safe to scale out: claim protocol is concurrent-worker safe
+  env:
+    CASELINE_WORKER_BATCH_SIZE: "20"     # backpressure: bounded in-flight work
+    CASELINE_ALERT_INTERVAL_SECONDS: "60"
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { cpu: "1", memory: 512Mi }
+
+agent: # voice workers: one per active call + warm pool
+  warmReplicas: 4      # HPA floor = warm pool; cold starts never eat a caller's first turn
+  maxReplicas: 60
+  targetCallsPerReplica: 1
+  env:
+    # Failover stacks (Phase 2 Workstream B): primary first, fallbacks after.
+    CASELINE_STT_PROVIDERS: "deepgram:nova-3"
+    CASELINE_LLM_PROVIDERS: "anthropic:claude-haiku-4-5,openai:gpt-4.1-mini"
+    CASELINE_TTS_PROVIDERS: "cartesia:sonic-3,openai:tts-1"
+  nodePool: agents
+  resources:
+    requests: { cpu: "2", memory: 2Gi }
+    limits: { cpu: "4", memory: 4Gi }
+
+# Self-hosted LiveKit SFU is deployed from the upstream livekit/livekit chart
+# (helm repo add livekit https://helm.livekit.io); values live alongside this
+# chart in livekit-values.yaml once the cluster exists.

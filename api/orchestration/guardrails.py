@@ -1,20 +1,25 @@
 """Guardrail output filter: the safety pass between LLM and TTS.
 
-Phase 1 scope (plan.md Workstream B): prompt constraints plus a fast
-regex/keyword screen that blocks the three unforgivables in legal intake —
-legal advice, fee quotes, and outcome guarantees — before they are ever
-spoken. The sub-100 ms inline ML classifier is Phase 2; this screen is the
-insertion point it will slot into.
+Two layers, both deterministic and both microseconds per sentence:
+
+  1. Regex screen (Phase 1): exact phrasings of the three unforgivables in
+     legal intake — legal advice, fee quotes, outcome guarantees.
+  2. Inline classifier (Phase 2): weighted lexical scorer that catches
+     paraphrases the regexes miss. Runs only when layer 1 passes. Sits
+     behind the ``GuardrailClassifier`` seam so a distilled ML model can
+     replace it without touching this file. Budget <100 ms; measured in
+     microseconds (perf-tested in tests/test_guardrails.py).
 
 Everything here is pure and dependency-free so the voice worker can import
-it without dragging in FastAPI or Postgres, and so it costs microseconds on
-the hot path (there is a latency budget line item for it: ~0 ms measurable).
+it without dragging in FastAPI or Postgres.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+from api.orchestration.classifier import GuardrailClassifier, LexicalGuardrailClassifier
 
 # Category -> patterns. Compiled once at import; matched per sentence.
 _BLOCKED: dict[str, list[str]] = {
@@ -56,9 +61,15 @@ class GuardrailVerdict:
 
 @dataclass
 class GuardrailScreen:
-    """Compiled screen; construct once per call with the firm's extras."""
+    """Compiled screen; construct once per call with the firm's extras.
+
+    ``classifier=None`` disables layer 2 (regex-only, the Phase 1 behavior);
+    the default is the inline lexical classifier."""
 
     extra_blocked_patterns: list[str] = field(default_factory=list)
+    classifier: GuardrailClassifier | None = field(
+        default_factory=LexicalGuardrailClassifier
+    )
 
     def __post_init__(self) -> None:
         self._compiled: list[tuple[str, re.Pattern[str]]] = [
@@ -75,6 +86,15 @@ class GuardrailScreen:
             m = pattern.search(text)
             if m:
                 return GuardrailVerdict(allowed=False, category=category, matched=m.group(0))
+        if self.classifier is not None:
+            verdict = self.classifier.classify(text)
+            if verdict is not None:
+                return GuardrailVerdict(
+                    allowed=False,
+                    category=verdict.category,
+                    matched=f"classifier(score={verdict.score:g}): "
+                    + ", ".join(verdict.features[:3]),
+                )
         return GuardrailVerdict(allowed=True)
 
 

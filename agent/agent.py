@@ -34,9 +34,10 @@ from livekit.agents import (
     function_tool,
     metrics,
 )
-from livekit.plugins import anthropic, cartesia, deepgram, silero
+from livekit.plugins import silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from agent import providers
 from agent.backend_client import BackendClient
 from agent.latency import TurnLatencyTracker, TurnSample
 from api.orchestration.guardrails import GuardrailScreen, StreamGuard
@@ -316,14 +317,22 @@ async def entrypoint(ctx: JobContext) -> None:
     usage = metrics.UsageCollector()
 
     # Per-firm config (cached server-side); None -> safe Phase 0 defaults.
-    config = await backend.get_agent_config()
+    # from_number (when telephony provides it) drives per-state consent.
+    from_number = os.getenv("CASELINE_TEST_FROM_NUMBER")  # SIP attrs land here later
+    config = await backend.get_agent_config(from_number=from_number)
     voice_id = (config or {}).get("voice_id") or os.getenv("CARTESIA_VOICE_ID") or None
     greeting = ((config or {}).get("script") or {}).get("greeting") or DEFAULT_GREETING
 
+    # Phase 2: each stage is a failover stack (primary + optional fallbacks
+    # behind a health-check driven FallbackAdapter — mid-call cutover).
+    stt_stack = providers.build_stt()
+    llm_stack = providers.build_llm()
+    tts_stack = providers.build_tts(voice_id)
+
     session = AgentSession(
-        stt=deepgram.STT(model="nova-3"),
-        llm=anthropic.LLM(model="claude-haiku-4-5"),
-        tts=cartesia.TTS(model="sonic-3", voice=voice_id),
+        stt=stt_stack.adapter,
+        llm=llm_stack.adapter,
+        tts=tts_stack.adapter,
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         preemptive_generation=True,  # fire LLM on STT partials
@@ -340,6 +349,10 @@ async def entrypoint(ctx: JobContext) -> None:
             "llm_ttft_ms": turn.llm_ttft_ms,
             "tts_ttfb_ms": turn.tts_ttfb_ms,
             "total_ms": turn.total_ms,
+            # which providers are serving right now (failover-aware)
+            "stt_provider": stt_stack.active_label(),
+            "llm_provider": llm_stack.active_label(),
+            "tts_provider": tts_stack.active_label(),
         }
         asyncio.create_task(backend.post_turn_metrics(payload))
 

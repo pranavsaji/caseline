@@ -50,6 +50,14 @@ def get_provider_class(name: str) -> type[CaseManagementProvider]:
         from integrations.clio import ClioProvider
 
         return ClioProvider
+    if name == "filevine":
+        from integrations.filevine import FilevineProvider
+
+        return FilevineProvider
+    if name == "litify":
+        from integrations.litify import LitifyProvider
+
+        return LitifyProvider
     if name == "mock":
         from integrations.mock import MockProvider
 

@@ -51,13 +51,19 @@ class BackendClient:
 
     # --- Phase 1: per-firm config ---
 
-    async def get_agent_config(self, role: str = "intaker") -> dict | None:
+    async def get_agent_config(
+        self, role: str = "intaker", from_number: str | None = None
+    ) -> dict | None:
         """Fetch the firm's agent config; None means run on safe defaults.
-        Config fetch must never take down a call at start."""
+        Config fetch must never take down a call at start. ``from_number``
+        lets the backend resolve the per-state consent policy for the call."""
         if not self.v1:
             return None
+        params: dict = {"role": role}
+        if from_number:
+            params["from_number"] = from_number
         try:
-            r = await self._client.get("/v1/agent-config", params={"role": role})
+            r = await self._client.get("/v1/agent-config", params=params)
             r.raise_for_status()
             return r.json()
         except httpx.HTTPError as exc:

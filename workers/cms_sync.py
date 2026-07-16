@@ -22,7 +22,7 @@ import time
 
 import psycopg
 
-from api.platform import events
+from api.platform import alerts, events
 from api.platform.db import Database
 from api.platform.secrets import SecretsCipher, make_cipher
 from integrations import CaseManagementProvider, Contact, Matter, Note, Task, get_provider_class
@@ -60,7 +60,9 @@ class EventProcessor:
         )
         cls = get_provider_class(firm["cms_provider"])
         kwargs = dict(credentials)
-        if firm["cms_provider"] == "clio":
+        # Every OAuth-style adapter rotates tokens; rotated credentials are
+        # merged and re-encrypted at rest, never logged, never plaintext.
+        if firm["cms_provider"] in ("clio", "filevine", "litify"):
             kwargs["on_token_refresh"] = lambda rotated: self._persist_rotated_tokens(
                 firm_id, credentials, rotated
             )
@@ -217,18 +219,32 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     from dotenv import load_dotenv
 
+    from api.compliance.redaction import install_log_redaction
+
     load_dotenv()
+    install_log_redaction()
     dsn = os.environ["CASELINE_DATABASE_URL"]
     db = Database(dsn)
     db.migrate()
     processor = EventProcessor(db, make_cipher())
     poll_seconds = float(os.getenv("CASELINE_WORKER_POLL_SECONDS", "1.0"))
-    logger.info("CMS sync worker polling every %.1fs", poll_seconds)
+    # Backpressure: the claim batch bounds in-flight work per poll; a flooded
+    # outbox drains at a steady rate instead of ballooning worker memory.
+    batch_size = int(os.getenv("CASELINE_WORKER_BATCH_SIZE", "20"))
+    alert_every = max(int(float(os.getenv("CASELINE_ALERT_INTERVAL_SECONDS", "60")) / poll_seconds), 1)
+    logger.info("CMS sync worker polling every %.1fs (batch %s)", poll_seconds, batch_size)
+    ticks = 0
     try:
         while True:
-            counts = processor.process_once()
+            counts = processor.process_once(limit=batch_size)
             if any(counts.values()):
                 logger.info("batch: %s", counts)
+            ticks += 1
+            if ticks % alert_every == 0:
+                firing = alerts.evaluate(db)
+                if firing:
+                    alerts.log_alerts(firing)
+                    alerts.notify(firing)
             time.sleep(poll_seconds)
     finally:
         processor.close()

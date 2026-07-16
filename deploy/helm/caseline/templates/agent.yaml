@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caseline-agent
+  labels: { app: caseline-agent }
+spec:
+  replicas: {{ .Values.agent.warmReplicas }}
+  selector:
+    matchLabels: { app: caseline-agent }
+  template:
+    metadata:
+      labels: { app: caseline-agent }
+    spec:
+      nodeSelector:
+        pool: {{ .Values.agent.nodePool }}
+      tolerations:
+        - key: caseline.dev/agents
+          value: "true"
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 3600 # drain: never kill a live call
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["python", "-m", "agent.agent", "start"]
+          envFrom:
+            - secretRef: { name: {{ .Values.envFromSecret }} }
+          env:
+            {{- range $k, $v := .Values.agent.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources: {{- toYaml .Values.agent.resources | nindent 12 }}
+---
+# Warm pool + scale on concurrent calls: LiveKit workers report load; the
+# custom metric (active jobs per replica) drives the HPA, with the floor
+# acting as the warm pool so first-turn latency never pays a cold start.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: caseline-agent
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: caseline-agent
+  minReplicas: {{ .Values.agent.warmReplicas }}
+  maxReplicas: {{ .Values.agent.maxReplicas }}
+  metrics:
+    - type: Pods
+      pods:
+        metric:
+          name: livekit_active_jobs
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.agent.targetCallsPerReplica | quote }}

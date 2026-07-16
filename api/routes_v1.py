@@ -17,8 +17,12 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api import tools
+from api.compliance.consent import consent_policy
+from api.compliance.redaction import redact_turns
 from api.orchestration.config import load_agent_config, update_agent_config
+from api.platform import alerts as platform_alerts
 from api.platform import auth
+from api.platform import events as platform_events
 from api.platform.schemas import (
     AgentConfigUpdate,
     CompleteCallRequest,
@@ -97,7 +101,9 @@ def create_firm(req: CreateFirmRequest, request: Request) -> CreateFirmResponse:
     dependencies=[Depends(auth.require_admin)],
 )
 def create_token(firm_id: str, req: CreateTokenRequest, request: Request) -> CreateTokenResponse:
-    return CreateTokenResponse(token=auth.issue_token(_platform(request).db, firm_id, req.name))
+    return CreateTokenResponse(
+        token=auth.issue_token(_platform(request).db, firm_id, req.name, scopes=req.scopes)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,13 +113,30 @@ def create_token(firm_id: str, req: CreateTokenRequest, request: Request) -> Cre
 
 @router.get("/agent-config")
 def get_agent_config(
-    request: Request, role: str = "intaker", firm: auth.AuthedFirm = Depends(auth.require_firm)
+    request: Request,
+    role: str = "intaker",
+    from_number: str | None = None,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
 ) -> dict:
     p = _platform(request)
     config = load_agent_config(p.db, p.session_store, firm.firm_id, role)
     if config is None:
         raise HTTPException(status_code=404, detail=f"No {role} agent configured")
-    return {**config.model_dump(), "instructions": config.instructions()}
+    # Per-state consent (Phase 2): when two-party rules may govern the call,
+    # the recording disclosure is mandatory — firm config cannot disable it.
+    policy = consent_policy(from_number, firm_state=config.script.firm_state)
+    if policy.disclosure_required and not config.script.recording_disclosure:
+        config = config.model_copy(deep=True)
+        config.script.recording_disclosure = True
+    return {
+        **config.model_dump(),
+        "instructions": config.instructions(),
+        "consent": {
+            "caller_state": policy.caller_state,
+            "two_party": policy.two_party,
+            "disclosure_required": policy.disclosure_required,
+        },
+    }
 
 
 @router.put("/agents/{agent_id}/config")
@@ -226,6 +249,8 @@ def complete_call(
         outcome=req.outcome,
         caller_type=req.caller_type,
         from_number=req.from_number,
+        consent_state=req.consent_state,
+        two_party_consent=req.two_party_consent,
     )
 
 
@@ -245,12 +270,15 @@ def post_transcript(
             " ON CONFLICT (firm_id, id) DO NOTHING",
             (call_id, firm.firm_id, ctx.config.agent_id),
         )
+        # Redacted copy is computed at write time so the default read path
+        # never has to touch raw turns (Phase 2 redaction pipeline).
         conn.execute(
-            "INSERT INTO transcripts (firm_id, call_id, turns, summary)"
-            " VALUES (%s, %s, %s, %s)"
+            "INSERT INTO transcripts (firm_id, call_id, turns, turns_redacted, summary)"
+            " VALUES (%s, %s, %s, %s, %s)"
             " ON CONFLICT (firm_id, call_id) DO UPDATE SET turns = EXCLUDED.turns,"
+            " turns_redacted = EXCLUDED.turns_redacted,"
             " summary = COALESCE(EXCLUDED.summary, transcripts.summary)",
-            (firm.firm_id, call_id, json.dumps(turns), req.summary),
+            (firm.firm_id, call_id, json.dumps(turns), json.dumps(redact_turns(turns)), req.summary),
         )
         if req.recording_uri:
             conn.execute(
@@ -277,8 +305,9 @@ def post_turn_metrics(
     with p.db.firm(firm.firm_id) as conn:
         conn.execute(
             "INSERT INTO turn_metrics"
-            " (firm_id, call_id, speech_id, eou_delay_ms, llm_ttft_ms, tts_ttfb_ms, total_ms)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            " (firm_id, call_id, speech_id, eou_delay_ms, llm_ttft_ms, tts_ttfb_ms, total_ms,"
+            "  stt_provider, llm_provider, tts_provider)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 firm.firm_id,
                 req.call_id,
@@ -287,6 +316,9 @@ def post_turn_metrics(
                 req.llm_ttft_ms,
                 req.tts_ttfb_ms,
                 req.total_ms,
+                req.stt_provider,
+                req.llm_provider,
+                req.tts_provider,
             ),
         )
     return {"status": "recorded"}
@@ -344,23 +376,35 @@ def get_call(
     call_id: str, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
 ) -> dict:
     p = _platform(request)
+    # Raw (unredacted) transcript access is an explicit grant, not a default.
+    raw_allowed = firm.has_scope("transcripts:raw")
     with p.db.firm(firm.firm_id) as conn:
         call = conn.execute("SELECT * FROM calls WHERE id = %s", (call_id,)).fetchone()
         if call is None:
             raise HTTPException(status_code=404, detail="Call not found")
         transcript = conn.execute(
-            "SELECT turns, summary FROM transcripts WHERE call_id = %s", (call_id,)
+            "SELECT turns, turns_redacted, summary FROM transcripts WHERE call_id = %s",
+            (call_id,),
         ).fetchone()
         metrics = conn.execute(
-            "SELECT speech_id, eou_delay_ms, llm_ttft_ms, tts_ttfb_ms, total_ms"
+            "SELECT speech_id, eou_delay_ms, llm_ttft_ms, tts_ttfb_ms, total_ms,"
+            "       stt_provider, llm_provider, tts_provider"
             " FROM turn_metrics WHERE call_id = %s ORDER BY id",
             (call_id,),
         ).fetchall()
+    turns: list = []
+    if transcript:
+        if raw_allowed:
+            turns = transcript["turns"]
+        else:
+            # turns_redacted is NULL only for pre-Phase-2 rows; redact on read.
+            turns = transcript["turns_redacted"] or redact_turns(transcript["turns"])
     return {
         **{k: str(v) if k in ("started_at", "ended_at") else v for k, v in call.items()},
         "firm_id": str(call["firm_id"]),
         "agent_id": str(call["agent_id"]) if call["agent_id"] else None,
-        "transcript": transcript["turns"] if transcript else [],
+        "transcript": turns,
+        "transcript_redacted": not raw_allowed,
         "turn_metrics": metrics,
     }
 
@@ -410,6 +454,141 @@ def list_messages(
             (min(limit, 200),),
         ).fetchall()
     return [{**r, "id": str(r["id"]), "ts": str(r["ts"])} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Analytics (Phase 2 Workstream D) — aggregates only, no PII in responses
+# ---------------------------------------------------------------------------
+
+
+@router.get("/analytics/latency")
+def analytics_latency(
+    request: Request, days: int = 7, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Per-day and per-provider p50/p95 turn latency for the firm."""
+    days = min(max(days, 1), 90)
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        by_day = conn.execute(
+            "SELECT date_trunc('day', created_at)::date::text AS day, count(*) AS turns,"
+            "       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY total_ms)::numeric, 1)::float AS p50_ms,"
+            "       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY total_ms)::numeric, 1)::float AS p95_ms"
+            " FROM turn_metrics WHERE created_at > now() - make_interval(days => %s)"
+            " GROUP BY 1 ORDER BY 1",
+            (days,),
+        ).fetchall()
+        by_provider = conn.execute(
+            "SELECT coalesce(llm_provider, 'unknown') AS llm_provider,"
+            "       coalesce(tts_provider, 'unknown') AS tts_provider,"
+            "       count(*) AS turns,"
+            "       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY llm_ttft_ms)::numeric, 1)::float AS llm_ttft_p95_ms,"
+            "       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY tts_ttfb_ms)::numeric, 1)::float AS tts_ttfb_p95_ms,"
+            "       round(percentile_cont(0.95) WITHIN GROUP (ORDER BY total_ms)::numeric, 1)::float AS total_p95_ms"
+            " FROM turn_metrics WHERE created_at > now() - make_interval(days => %s)"
+            " GROUP BY 1, 2 ORDER BY turns DESC",
+            (days,),
+        ).fetchall()
+    return {
+        "days": days,
+        "slo_ms": platform_alerts.LATENCY_SLO_MS,
+        "by_day": by_day,
+        "by_provider": by_provider,
+    }
+
+
+@router.get("/analytics/outcomes")
+def analytics_outcomes(
+    request: Request, days: int = 30, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Call-outcome funnel: qualification, booking, transfer, abandonment."""
+    days = min(max(days, 1), 365)
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        calls = conn.execute(
+            "SELECT count(*) AS total,"
+            "       count(*) FILTER (WHERE outcome IS NULL AND ended_at IS NULL) AS abandoned"
+            " FROM calls WHERE started_at > now() - make_interval(days => %s)",
+            (days,),
+        ).fetchone()
+        outcomes = conn.execute(
+            "SELECT coalesce(outcome, 'unknown') AS outcome, count(*) AS n"
+            " FROM calls WHERE started_at > now() - make_interval(days => %s)"
+            " GROUP BY 1 ORDER BY n DESC",
+            (days,),
+        ).fetchall()
+        leads = conn.execute(
+            "SELECT count(*) AS total,"
+            "       count(*) FILTER (WHERE status = 'qualified') AS qualified"
+            " FROM leads WHERE created_at > now() - make_interval(days => %s)",
+            (days,),
+        ).fetchone()
+        consults = conn.execute(
+            "SELECT count(*) AS n FROM consults"
+            " WHERE created_at > now() - make_interval(days => %s)",
+            (days,),
+        ).fetchone()["n"]
+        transfers = conn.execute(
+            "SELECT count(*) AS n FROM events"
+            " WHERE type = 'call.transfer_requested'"
+            "   AND created_at > now() - make_interval(days => %s)",
+            (days,),
+        ).fetchone()["n"]
+
+    def rate(part: int, whole: int) -> float | None:
+        return round(part / whole, 3) if whole else None
+
+    return {
+        "days": days,
+        "calls": calls["total"],
+        "outcomes": outcomes,
+        "leads": leads["total"],
+        "qualified_leads": leads["qualified"],
+        "consults_booked": consults,
+        "transfers": transfers,
+        "qualification_rate": rate(leads["qualified"], leads["total"]),
+        "booking_rate": rate(consults, leads["qualified"]),
+        "transfer_rate": rate(transfers, calls["total"]),
+        "abandonment_rate": rate(calls["abandoned"], calls["total"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Platform ops (admin): queue health, DLQ replay, alerts (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/ops/overview", dependencies=[Depends(auth.require_admin)])
+def ops_overview(request: Request) -> dict:
+    p = _platform(request)
+    with p.db.admin() as conn:
+        stats = platform_events.queue_stats(conn)
+    return {"queue": stats}
+
+
+@router.get("/admin/ops/alerts", dependencies=[Depends(auth.require_admin)])
+def ops_alerts(request: Request) -> dict:
+    firing = platform_alerts.evaluate(_platform(request).db)
+    return {"alerts": platform_alerts.to_dicts(firing), "firing": len(firing)}
+
+
+@router.get("/admin/events/dead", dependencies=[Depends(auth.require_admin)])
+def dead_events(request: Request, limit: int = 100) -> list[dict]:
+    p = _platform(request)
+    with p.db.admin() as conn:
+        rows = platform_events.list_dead(conn, limit=min(limit, 500))
+    return [
+        {**r, "firm_id": str(r["firm_id"]), "created_at": str(r["created_at"])} for r in rows
+    ]
+
+
+@router.post("/admin/events/{event_id}/replay", dependencies=[Depends(auth.require_admin)])
+def replay_event(event_id: int, request: Request) -> dict:
+    p = _platform(request)
+    with p.db.admin() as conn:
+        replayed = platform_events.replay_dead(conn, event_id)
+    if not replayed:
+        raise HTTPException(status_code=409, detail="Event is not dead-lettered")
+    return {"status": "requeued", "event_id": event_id}
 
 
 @router.get("/events")

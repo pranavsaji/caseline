@@ -29,28 +29,31 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def issue_token(db: Database, firm_id: str, name: str = "default") -> str:
+def issue_token(
+    db: Database, firm_id: str, name: str = "default", scopes: list[str] | None = None
+) -> str:
     """Create a service token for a firm. The raw token is returned exactly
-    once and never stored."""
+    once and never stored. ``scopes`` grants beyond the default surface —
+    e.g. ``transcripts:raw`` for unredacted transcript access."""
     token = TOKEN_PREFIX + pysecrets.token_urlsafe(32)
     with db.admin() as conn:
         conn.execute(
-            "INSERT INTO firm_tokens (firm_id, name, token_hash) VALUES (%s, %s, %s)",
-            (firm_id, name, _hash(token)),
+            "INSERT INTO firm_tokens (firm_id, name, token_hash, scopes) VALUES (%s, %s, %s, %s)",
+            (firm_id, name, _hash(token), scopes or []),
         )
     return token
 
 
-def resolve_token(db: Database, token: str) -> str | None:
-    """Return the firm_id for a live token, or None."""
+def resolve_token(db: Database, token: str) -> tuple[str, list[str]] | None:
+    """Return (firm_id, scopes) for a live token, or None."""
     if not token.startswith(TOKEN_PREFIX):
         return None
     with db.admin() as conn:
         row = conn.execute(
-            "SELECT firm_id FROM firm_tokens WHERE token_hash = %s AND revoked_at IS NULL",
+            "SELECT firm_id, scopes FROM firm_tokens WHERE token_hash = %s AND revoked_at IS NULL",
             (_hash(token),),
         ).fetchone()
-    return str(row["firm_id"]) if row else None
+    return (str(row["firm_id"]), list(row["scopes"] or [])) if row else None
 
 
 def revoke_token(db: Database, firm_id: str, name: str) -> int:
@@ -87,6 +90,10 @@ class RateLimiter:
 @dataclass
 class AuthedFirm:
     firm_id: str
+    scopes: tuple[str, ...] = ()
+
+    def has_scope(self, scope: str) -> bool:
+        return scope in self.scopes
 
 
 def bearer_token(request: Request) -> str:
@@ -104,12 +111,15 @@ def require_firm(request: Request) -> AuthedFirm:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     cached = platform.session_store.get(f"token:{_hash(token)}")
     if cached:
-        return AuthedFirm(firm_id=cached["firm_id"])
-    firm_id = resolve_token(platform.db, token)
-    if firm_id is None:
+        return AuthedFirm(firm_id=cached["firm_id"], scopes=tuple(cached.get("scopes", ())))
+    resolved = resolve_token(platform.db, token)
+    if resolved is None:
         raise HTTPException(status_code=401, detail="Invalid or revoked token")
-    platform.session_store.set(f"token:{_hash(token)}", {"firm_id": firm_id}, ttl_seconds=60)
-    return AuthedFirm(firm_id=firm_id)
+    firm_id, scopes = resolved
+    platform.session_store.set(
+        f"token:{_hash(token)}", {"firm_id": firm_id, "scopes": scopes}, ttl_seconds=60
+    )
+    return AuthedFirm(firm_id=firm_id, scopes=tuple(scopes))
 
 
 def require_admin(request: Request) -> None:

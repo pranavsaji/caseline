@@ -27,6 +27,10 @@ class CreateFirmResponse(BaseModel):
 
 class CreateTokenRequest(BaseModel):
     name: str = "default"
+    scopes: list[str] = Field(
+        default_factory=list,
+        description="Extra grants, e.g. 'transcripts:raw' for unredacted transcript access",
+    )
 
 
 class CreateTokenResponse(BaseModel):
@@ -95,6 +99,9 @@ class CompleteCallRequest(BaseModel):
     outcome: str | None = None
     caller_type: str | None = None
     from_number: str | None = None
+    # Consent bookkeeping (Phase 2): which policy governed the call.
+    consent_state: str | None = None
+    two_party_consent: bool | None = None
 
 
 class TranscriptTurn(BaseModel):
@@ -116,3 +123,8 @@ class TurnMetricsV1(BaseModel):
     llm_ttft_ms: float
     tts_ttfb_ms: float
     total_ms: float
+    # Which providers actually served the turn (failover makes this dynamic);
+    # lets latency dashboards slice by provider (Phase 2 Workstream D).
+    stt_provider: str | None = None
+    llm_provider: str | None = None
+    tts_provider: str | None = None
