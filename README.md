@@ -85,6 +85,9 @@ uv run pytest -v
 ## Run the platform (Phase 1)
 
 ```bash
+# 0. Local Postgres just for Caseline (own cluster on :5455, data in .tmp/pgdata)
+./scripts/dev_db.sh start   # prints the CASELINE_DATABASE_URL to put in .env
+
 # 1. Backend (needs CASELINE_DATABASE_URL, CASELINE_SECRETS_KEY, CASELINE_ADMIN_TOKEN;
 #    migrations apply on boot)
 uv run uvicorn api.main:app --port 8000

@@ -10,6 +10,16 @@
 | Phase 3 — Omnichannel | ✅ **Code complete & verified** — chaser, SMS/email threads, treatment tracker, config studio + preview all built on the Phase 1 brain; re-verified under the 217-test suite; live HTTP smoke PASS with lead-to-first-contact 0.6 s; open items are live-transport verification (Twilio SMS/SIP) — see §Phase 3 Progress | 2026-07-16 |
 | Phase 4 — Differentiation | ✅ **Code complete & verified** — consent-gated voice cloning, qualification tuning from attorney verdicts, smart referrals with a human/consent send gate, k-anonymous benchmark analytics, and an evidence-gated S2S greeting path + benchmark harness; 217 tests green (43 new); live HTTP smoke 12/12 PASS; open items are live-account verification only (Cartesia clone, realtime S2S trials, referral email over real SMTP) — see §Phase 4 Progress | 2026-07-16 |
 
+### 🔑 Live-stack verification — 2026-07-16 (provider keys provisioned)
+
+Keys landed in `.env` and the full stack was brought up and verified live on this machine:
+
+- **Validated against real provider APIs:** Deepgram (auth OK), Cartesia (auth OK + real sonic-3 synthesis), LiveKit Cloud (server-API auth OK; agent worker `dev` mode **registered** with the project, US West B), Twilio (account auth OK; from-number corrected to E.164 `+13124830370`). **Hot-path round trip proven with real audio: Cartesia TTS → Deepgram nova-3 STT returned the exact input line.**
+- **Persistent dev stack running:** dedicated Postgres cluster (`scripts/dev_db.sh`, port 5455) + uvicorn :8000 + cms_sync worker + Next.js dashboard :3000. First real firm onboarded ("Saji & Partners Injury Law"); firm token wired into `.env` and `frontend/.env.local`.
+- **All-phases live sweep over real HTTP: 24/24 PASS** — Phase 0 endpoints; Phase 1 tools/idempotent booking/redaction/RLS/CMS sync; Phase 2 analytics/ops/alerts; Phase 3 webform → chaser SMS thread (first contact 0.5 s) → full SMS conversation → consult booked; Phase 4 voice profile → agent assignment, verdicts → tuning suggestion, worker-proposed referral, benchmarks. Dashboard pages all render the live data.
+- **⛔ One real blocker: no working LLM key.** `DEEPSEEK_API_KEY` currently contains the Deepgram key (401 from DeepSeek) and `ANTHROPIC_API_KEY` is empty — the voice agent registers and answers, but the LLM turn would fail on a real call. Fix: paste a real DeepSeek key (`sk-…`) or an Anthropic key + set `CASELINE_LLM_PROVIDERS=anthropic:claude-haiku-4-5`.
+- Still human-in-the-loop: Twilio number → LiveKit SIP inbound trunk (do after the LLM key, or the number answers and stalls), a real-recipient SMS test, mic `console` smoke, and the ≥20-call latency exit measurements.
+
 Execution plan for the architecture defined in `caseline-voice-intake-architecture.md`. Written from the principal-architect seat: each phase has a single risk it exists to retire, hard exit criteria, and an explicit "not in this phase" list. Phases are gates, not calendar promises — you do not start Phase N+1 until Phase N's exit criteria are demonstrably true.
 
 ---

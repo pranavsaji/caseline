@@ -6,7 +6,25 @@ import subprocess
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import PlatformContext, create_app
+# Tests must be hermetic: once a developer fills .env with a real database
+# URL and Twilio credentials, create_app()'s load_dotenv would otherwise
+# mount the platform against the live dev stack — and could send real SMS.
+# Blank the ambient platform env before anything reads it (empty string is
+# falsy for every make_* factory). CASELINE_TEST_ADMIN_DSN stays honored.
+for _var in (
+    "CASELINE_DATABASE_URL",
+    "CASELINE_REDIS_URL",
+    "CASELINE_FIRM_TOKEN",
+    "CASELINE_ADMIN_TOKEN",
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_FROM_NUMBER",
+    "CASELINE_SMTP_HOST",
+    "CASELINE_PUBSUB_TOPIC",
+):
+    os.environ[_var] = ""
+
+from api.main import PlatformContext, create_app  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Phase 0 fixtures (SQLite prototype endpoints)
