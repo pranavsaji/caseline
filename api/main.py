@@ -1,15 +1,20 @@
-"""Caseline Phase 0 backend: tool endpoints + mock CMS + latency metrics.
+"""Caseline backend: Phase 0 prototype endpoints + Phase 1 multi-tenant v1 API.
 
 App-factory pattern so tests can spin up an isolated instance against a
 temporary database. `app` at module level is what uvicorn serves:
 
     uvicorn api.main:app --reload
+
+The Phase 1 platform (Postgres + RLS, auth, events, /v1/*) mounts when
+CASELINE_DATABASE_URL is configured; the Phase 0 endpoints stay available so
+the single-tenant prototype path keeps working without Postgres.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -30,10 +35,66 @@ from api.storage import Store
 logger = logging.getLogger("caseline.api")
 
 
-def create_app(db_path: str | None = None) -> FastAPI:
+@dataclass
+class PlatformContext:
+    """Everything the v1 routes need, built once per app."""
+
+    db: object
+    session_store: object
+    sms: object
+    cipher: object
+    rate_limiter: object
+    admin_token: str | None
+
+
+def _build_platform(database_url: str, admin_token: str | None) -> PlatformContext:
+    from api.messaging import make_sms_provider
+    from api.platform.auth import RateLimiter
+    from api.platform.db import Database
+    from api.platform.secrets import make_cipher
+    from api.platform.session_state import make_session_store
+
+    db = Database(database_url)
+    db.migrate()
+    return PlatformContext(
+        db=db,
+        session_store=make_session_store(),
+        sms=make_sms_provider(),
+        cipher=make_cipher(),
+        rate_limiter=RateLimiter(
+            limit=int(os.getenv("CASELINE_RATE_LIMIT_PER_MINUTE", "300"))
+        ),
+        admin_token=admin_token,
+    )
+
+
+def create_app(
+    db_path: str | None = None,
+    database_url: str | None = None,
+    admin_token: str | None = None,
+    platform: PlatformContext | None = None,
+) -> FastAPI:
     load_dotenv()
-    app = FastAPI(title="Caseline Phase 0 Backend", version="0.1.0")
+    app = FastAPI(title="Caseline Backend", version="0.2.0")
     app.state.store = Store(db_path or os.getenv("CASELINE_DB", "caseline.db"))
+
+    database_url = database_url or os.getenv("CASELINE_DATABASE_URL")
+    admin_token = admin_token or os.getenv("CASELINE_ADMIN_TOKEN")
+    owns_platform = False
+    if platform is None and database_url:
+        platform = _build_platform(database_url, admin_token)
+        owns_platform = True
+    if platform is not None:
+        from api.routes_v1 import router as v1_router
+
+        app.state.platform = platform
+        app.include_router(v1_router)
+
+        if owns_platform:
+
+            @app.on_event("shutdown")
+            def _close_platform() -> None:
+                platform.db.close()
 
     def store(request: Request) -> Store:
         return request.app.state.store

@@ -1,9 +1,15 @@
-"""Caseline Phase 0 voice worker: LiveKit Agents intake receptionist.
+"""Caseline voice worker: LiveKit Agents intake receptionist.
 
 Pipeline (cascading, per architecture doc §3.2):
   Deepgram Nova-3 STT -> Claude Haiku 4.5 -> Cartesia Sonic-3 TTS
   Silero VAD + multilingual semantic turn detector
   preemptive_generation=True, min_endpointing_delay=0.4s
+
+Phase 1: instructions, qualification rules, routing, and guardrails come
+from the firm's agent config (fetched from the backend at call start, cached
+server-side in Redis). A regex guardrail screen sits between LLM output and
+TTS. If the backend or config is unreachable the worker still answers, on
+safe Phase 0 defaults — config can never take down a call.
 
 Run (backend must be up on CASELINE_BACKEND_URL):
   python -m agent.agent console   # local mic/speaker smoke test, no telephony
@@ -33,11 +39,14 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from agent.backend_client import BackendClient
 from agent.latency import TurnLatencyTracker, TurnSample
+from api.orchestration.guardrails import GuardrailScreen, StreamGuard
 
 load_dotenv()
 logger = logging.getLogger("caseline.agent")
 
-INSTRUCTIONS = (
+# Phase 0 fallback: used when no firm config is available so a backend
+# outage degrades to the generic script instead of dead air.
+DEFAULT_INSTRUCTIONS = (
     "You are Caseline, the AI intake receptionist for a personal injury law firm. "
     "Warm, concise, human — short spoken sentences, no lists, no jargon. "
     "Greet the caller, find out if they have a potential injury case, and collect: "
@@ -53,13 +62,105 @@ INSTRUCTIONS = (
     "Before ending any call, call write_to_cms with a short summary and the structured "
     "facts you collected. Never invent facts the caller did not state."
 )
+DEFAULT_DEFLECTION = (
+    "That's exactly the kind of question our attorneys will answer in your "
+    "consultation — I can't speak to it myself."
+)
+DEFAULT_GREETING = (
+    "Greet the caller warmly, say you're with the firm's intake team, "
+    "and ask how you can help."
+)
 
 
 class IntakeAgent(Agent):
-    def __init__(self, backend: BackendClient, call_id: str):
-        super().__init__(instructions=INSTRUCTIONS)
+    def __init__(self, backend: BackendClient, call_id: str, config: dict | None):
+        config = config or {}
+        instructions = config.get("instructions") or DEFAULT_INSTRUCTIONS
+        super().__init__(instructions=instructions)
         self._backend = backend
         self._call_id = call_id
+        self._config = config
+        guardrails = config.get("guardrails") or {}
+        self._screen = GuardrailScreen(
+            extra_blocked_patterns=guardrails.get("extra_blocked_patterns", [])
+        )
+        self._deflection = guardrails.get("deflection_line") or DEFAULT_DEFLECTION
+
+    # --- guardrail pass between LLM and TTS (plan.md Workstream B) ---
+
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        guard = StreamGuard(self._screen, self._deflection)
+        deflected = False
+        last_chunk = None
+        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+            if isinstance(chunk, str):
+                released = None if guard.tripped else guard.feed(chunk)
+                if guard.tripped and not deflected:
+                    deflected = True
+                    yield ((released + " ") if released else "") + guard.deflection_line
+                elif released:
+                    yield released
+                continue
+            last_chunk = chunk
+            delta = getattr(chunk, "delta", None)
+            content = getattr(delta, "content", None) if delta is not None else None
+            if content is None:
+                yield chunk  # tool calls / usage chunks pass through untouched
+                continue
+            if guard.tripped:
+                delta.content = None
+                if getattr(delta, "tool_calls", None):
+                    yield chunk
+                continue
+            released = guard.feed(content)
+            if guard.tripped and not deflected:
+                deflected = True
+                logger.warning(
+                    "guardrail tripped on call %s: %s (%s)",
+                    self._call_id,
+                    guard.tripped.category,
+                    guard.tripped.matched,
+                )
+                delta.content = ((released + " ") if released else "") + guard.deflection_line
+                yield chunk
+            elif released:
+                delta.content = released
+                yield chunk
+            elif getattr(delta, "tool_calls", None):
+                delta.content = None
+                yield chunk
+        remaining = guard.flush()
+        if remaining:
+            if last_chunk is not None and getattr(last_chunk, "delta", None) is not None:
+                final = last_chunk.model_copy(deep=True)
+                final.delta.content = remaining
+                final.delta.tool_calls = []
+                yield final
+            else:
+                yield remaining
+        elif guard.tripped and not deflected:
+            yield guard.deflection_line
+
+    # --- typed tools: the LLM selects, the backend executes ---
+
+    @function_tool
+    async def lookup_caller(self, phone: str) -> str:
+        """Check whether a caller is already known to the firm before treating
+        them as a brand-new lead.
+
+        Args:
+            phone: Caller's phone number in E.164 or as spoken.
+        """
+        if not self._backend.v1:
+            return "unknown caller (lookup unavailable)"
+        result = await self._backend.lookup_caller(phone)
+        logger.info("lookup_caller -> %s", result)
+        if not result.get("known"):
+            return "new caller, not in our records"
+        return (
+            f"known caller: {result['name']}, last lead status: "
+            f"{result.get('last_lead_status') or 'none'}"
+        )
 
     @function_tool
     async def qualify_lead(
@@ -74,7 +175,7 @@ class IntakeAgent(Agent):
             has_insurance: Whether any insurance (theirs or the other party's) is involved.
         """
         result = await self._backend.qualify_lead(
-            incident_date, injury_type, in_treatment, has_insurance
+            incident_date, injury_type, in_treatment, has_insurance, call_id=self._call_id
         )
         logger.info("qualify_lead -> %s", result)
         return result["decision"]
@@ -88,8 +189,58 @@ class IntakeAgent(Agent):
             phone: Caller's phone number.
             slot_iso: Chosen consultation slot as an ISO 8601 datetime.
         """
-        result = await self._backend.schedule_consult(name, phone, slot_iso)
+        result = await self._backend.schedule_consult(
+            name, phone, slot_iso, call_id=self._call_id
+        )
         logger.info("schedule_consult -> %s", result)
+        return result["status"]
+
+    @function_tool
+    async def transfer_to_human(self, reason: str) -> str:
+        """Transfer the caller to a human at the firm when they ask for a person,
+        are upset, or the situation needs judgment you don't have.
+
+        Args:
+            reason: One short sentence on why the caller needs a human.
+        """
+        if not self._backend.v1:
+            return "transfer unavailable; offer to take a detailed message instead"
+        result = await self._backend.transfer_to_human(self._call_id, reason)
+        logger.info("transfer_to_human -> %s", result)
+        if result["action"] == "transfer" and result.get("target"):
+            asyncio.create_task(_try_sip_transfer(self._call_id, result["target"]))
+            return "transferring the caller now — tell them you're connecting them"
+        return "no one is available right now; apologize and take a detailed message instead"
+
+    @function_tool
+    async def send_sms(self, to: str, body: str) -> str:
+        """Send the caller a short SMS (e.g. consult confirmation with the firm's
+        address). Only with the caller's permission.
+
+        Args:
+            to: Destination phone number.
+            body: Message text, one or two sentences.
+        """
+        if not self._backend.v1:
+            return "sms unavailable"
+        result = await self._backend.send_sms(self._call_id, to, body)
+        logger.info("send_sms -> %s", result)
+        return result["status"]
+
+    @function_tool
+    async def take_message(self, caller_name: str, phone: str, message: str) -> str:
+        """Take a message for the firm (adjusters, existing clients, declined
+        leads, after-hours transfer requests).
+
+        Args:
+            caller_name: The caller's name.
+            phone: Callback number.
+            message: The message content.
+        """
+        if not self._backend.v1:
+            return "noted"
+        result = await self._backend.take_message(self._call_id, caller_name, phone, message)
+        logger.info("take_message -> %s", result)
         return result["status"]
 
     @function_tool
@@ -108,6 +259,50 @@ class IntakeAgent(Agent):
         return result["status"]
 
 
+async def _try_sip_transfer(room_name: str, target: str) -> None:
+    """Best-effort live transfer via LiveKit SIP REFER. Failures are logged,
+    never raised — the agent falls back to taking a message."""
+    try:
+        from livekit import api as lk_api
+
+        async with lk_api.LiveKitAPI() as lk:
+            participants = await lk.room.list_participants(
+                lk_api.ListParticipantsRequest(room=room_name)
+            )
+            sip_participant = next(
+                (p for p in participants.participants if str(p.kind) == "3" or "sip" in p.identity.lower()),
+                None,
+            )
+            if sip_participant is None:
+                logger.warning("no SIP participant in %s to transfer", room_name)
+                return
+            await lk.sip.transfer_sip_participant(
+                lk_api.TransferSIPParticipantRequest(
+                    room_name=room_name,
+                    participant_identity=sip_participant.identity,
+                    transfer_to=f"tel:{target}",
+                    play_dialtone=True,
+                )
+            )
+            logger.info("SIP transfer of %s to %s initiated", room_name, target)
+    except Exception as exc:  # noqa: BLE001 — transfer failure must not kill the call
+        logger.warning("SIP transfer failed for %s -> %s: %s", room_name, target, exc)
+
+
+def _history_turns(session: AgentSession) -> list[dict]:
+    turns: list[dict] = []
+    try:
+        for item in session.history.items:
+            if getattr(item, "type", "") != "message":
+                continue
+            text = getattr(item, "text_content", None)
+            if text:
+                turns.append({"role": str(item.role), "text": text})
+    except Exception as exc:  # noqa: BLE001 — transcript capture is best-effort
+        logger.warning("failed to extract transcript: %s", exc)
+    return turns
+
+
 def prewarm(proc: JobProcess) -> None:
     # Pre-load VAD so it never costs a caller their first-turn latency.
     proc.userdata["vad"] = silero.VAD.load()
@@ -120,13 +315,15 @@ async def entrypoint(ctx: JobContext) -> None:
     tracker = TurnLatencyTracker(call_id=call_id)
     usage = metrics.UsageCollector()
 
+    # Per-firm config (cached server-side); None -> safe Phase 0 defaults.
+    config = await backend.get_agent_config()
+    voice_id = (config or {}).get("voice_id") or os.getenv("CARTESIA_VOICE_ID") or None
+    greeting = ((config or {}).get("script") or {}).get("greeting") or DEFAULT_GREETING
+
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=anthropic.LLM(model="claude-haiku-4-5"),
-        tts=cartesia.TTS(
-            model="sonic-3",
-            voice=os.getenv("CARTESIA_VOICE_ID") or None,
-        ),
+        tts=cartesia.TTS(model="sonic-3", voice=voice_id),
         vad=ctx.proc.userdata["vad"],
         turn_detection=MultilingualModel(),
         preemptive_generation=True,  # fire LLM on STT partials
@@ -160,15 +357,15 @@ async def entrypoint(ctx: JobContext) -> None:
     async def _shutdown() -> None:
         logger.info("call %s latency summary: %s", call_id, tracker.summary())
         logger.info("call %s usage: %s", call_id, usage.get_summary())
+        await backend.post_transcript(call_id, _history_turns(session))
         await backend.aclose()
 
     ctx.add_shutdown_callback(_shutdown)
 
-    await session.start(agent=IntakeAgent(backend=backend, call_id=call_id), room=ctx.room)
-    await session.generate_reply(
-        instructions="Greet the caller warmly, say you're with the firm's intake team, "
-        "and ask how you can help."
+    await session.start(
+        agent=IntakeAgent(backend=backend, call_id=call_id, config=config), room=ctx.room
     )
+    await session.generate_reply(instructions=greeting)
 
 
 if __name__ == "__main__":

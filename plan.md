@@ -4,8 +4,8 @@
 
 | Phase | Status | Last updated |
 |---|---|---|
-| Phase 0 — Prototype | 🟡 **Code complete & tested** — live-call validation blocked on provider credentials | 2026-07-16 |
-| Phase 1 — Foundation | ⚪ Not started | — |
+| Phase 0 — Prototype | 🟡 **Code complete & tested** — all engineering done; live-call exit criteria blocked on provider credentials/accounts (not code) | 2026-07-16 |
+| Phase 1 — Foundation | 🟡 **Code complete & tested** — all four workstreams built, 83-test suite green incl. real-Postgres RLS + e2e simulated firm; live pilot items blocked on the same credentials + a real Clio sandbox | 2026-07-16 |
 | Phase 2 — Hardening | ⚪ Not started | — |
 | Phase 3 — Omnichannel | ⚪ Not started | — |
 | Phase 4 — Differentiation | ⚪ Not started | — |
@@ -63,7 +63,7 @@ Multi-tenancy, real CMS, SMS/email, recordings retention, guardrail classifier, 
 - [x] Agent module import-validated against installed `livekit-agents` 1.x (entrypoint, prewarm, all 3 tools registered)
 - [x] `.env.example`, README with run/validation instructions
 
-**Remaining for Phase 0 exit (blocked on credentials/accounts, not code):**
+**Remaining for Phase 0 exit (blocked on credentials/accounts, not code — re-verified 2026-07-16, no code work outstanding):**
 
 - [ ] Provision LiveKit Cloud project + Deepgram/Anthropic/Cartesia API keys (fill `.env` from `.env.example`)
 - [ ] Local voice smoke test: `uv run python -m agent.agent download-files` then `console` mode (mic/speaker)
@@ -71,6 +71,10 @@ Multi-tenancy, real CMS, SMS/email, recordings retention, guardrail classifier, 
 - [ ] **Exit criterion:** ≥20 real test calls, p95 turn latency ≤800 ms via `/metrics/calls/{call_id}`
 - [ ] **Exit criterion:** barge-in interrupts TTS within ~200 ms (manual verification on test calls)
 - [ ] **Exit criterion:** written per-stage latency breakdown identifying the actual bottleneck
+
+> 2026-07-16 note: Phase 1 was built without waiting on these (they need human account
+> provisioning only). The Phase 0 prototype path — SQLite endpoints + tokenless worker —
+> still works unchanged for the keyless local demo, and all Phase 0 tests still pass.
 
 ---
 
@@ -114,6 +118,57 @@ Multi-tenancy, real CMS, SMS/email, recordings retention, guardrail classifier, 
 ### Deliberately out
 
 Self-hosted SFU, autoscaling, provider failover, outbound calling, email channel, second CMS, voice cloning.
+
+### ✅ Progress — updated 2026-07-16
+
+**Code complete across all four workstreams. 83 tests green (`uv run pytest`): the 28 Phase 0 tests unchanged + 55 new, including RLS verification against a real throwaway Postgres the suite boots itself (initdb, trust auth, zero footprint). Full stack also validated live over real HTTP: uvicorn + Postgres + worker + built Next.js dashboard rendering the resulting calls/leads/transcript.**
+
+**Workstream A — Core platform:**
+
+- [x] Full data model from architecture doc §6 (`firms`, `agents`, `calls`, `transcripts`, `leads`, `contacts`, `matters`, `tasks`, `messages`, `events`, plus `consults`, `firm_tokens`, `idempotency_keys`, `turn_metrics`), `firm_id` on every row, **RLS enforced from migration 0001** (`api/platform/migrations/`)
+- [x] Two-role model: owner role for platform ops only; `caseline_app` role (non-owner, RLS always applies) for every request-path query via `db.firm(firm_id)` + `SET LOCAL app.firm_id`
+- [x] Append-only `events` table as outbox + audit trail; `EventBus` seam with Pub/Sub adapter stub for GCP (local outbox poll is the bus); app role can INSERT but never UPDATE/DELETE events (append-only enforced by grants, tested)
+- [x] Session state behind one interface: Redis (`CASELINE_REDIS_URL`) or in-memory; live-call config cache never touches Postgres on the hot path
+- [x] Auth: opaque firm service tokens (sha256-hashed at rest, shown once), bearer-token → firm_id → RLS context; per-token rate limiting (429); `/v1/admin/*` gated by deploy-level admin token
+- [x] CMS credentials encrypted at rest from day one: `SecretsCipher` interface — Fernet locally, Cloud KMS adapter for GCP; plaintext never stored (tested)
+- ⚠️ Deviations from the letter of the plan, deliberate: Cloud SQL/GCP Pub/Sub/KMS are config-swap adapters, not live services (no GCP account in play); events consumers poll the outbox table rather than Pub/Sub locally — same contract, swap is config
+
+**Workstream B — Orchestration layer:**
+
+- [x] Hardcoded prompt replaced by per-firm agent config (`script_config`, `qualification_rules`, `routing_rules`, `guardrails`, business hours — all jsonb), validated by pydantic before persisting, compiled to runtime instructions, cached with explicit invalidation on update (edits reach the next call in seconds)
+- [x] Typed tool layer, each a deterministic tested function the LLM only selects: `lookup_caller`, `qualify_lead` (per-firm SOL + refer-out rules), `schedule_consult` (idempotency key; retry returns the same consult), `transfer_to_human` (business-hours aware), `send_sms` (provider seam: Twilio/logging), `take_message`, `write_to_cms`/`complete_call`
+- [x] First guardrail pass between LLM and TTS: regex/keyword screen (legal advice, fee quotes, outcome guarantees + per-firm blocklist), sentence-granularity streaming filter wired into the worker's `llm_node`, deflection line speaks instead; microseconds per sentence (perf-tested). Inline ML classifier remains Phase 2
+- [x] Live transfer escape hatch: routing decision + audit event in the platform; SIP REFER via LiveKit API in the worker (best-effort, can't be exercised without live telephony)
+- [x] Worker degrades safely: config/backend unreachable → Phase 0 default script, guardrails still on; metrics/transcript posting can never break a live call
+
+**Workstream C — CMS integration:**
+
+- [x] `CaseManagementProvider` ABC + normalized schema (Lead/Contact/Matter/Task/Note) defined before any adapter (`integrations/base.py`, `models.py`)
+- [x] Clio adapter (Manage API v4): contact dedupe by phone search, matter/task/note mapping, OAuth refresh-and-retry with rotated tokens re-encrypted + persisted, retryable-vs-poison error mapping — fully tested against a mocked transport
+- [x] Idempotency keys on every external write from the first line: ledger table + keys derived from event id, so a retried event finishes a half-completed sync instead of duplicating (tested: provider crash mid-sync → retry → exactly one contact/matter/note)
+- [x] Async worker (`workers/cms_sync.py`): claims events `FOR UPDATE SKIP LOCKED`, exponential backoff, dead-letter after 5 attempts, `replay_dead` for fixed poison payloads
+- ⚠️ Bi-directional sync is outbound + external-id backfill; **Clio inbound webhooks are not built yet** (needs a real Clio app registration) — carried as the first Phase 1 pilot item
+
+**Workstream D — Recordings, transcripts, dashboard:**
+
+- [x] Transcripts persisted per call (jsonb turns + summary) with per-call latency rollup onto the call row; `recording_uri` column + per-firm `retention_days` in the schema
+- [x] Next.js (TypeScript) dashboard v1 (`frontend/`): call/lead/consult lists with outcome + latency-SLO pills and CMS sync status, call detail with transcript + per-stage turn latency, raw-but-safe JSON config editing (client-validated, pydantic-revalidated, firm token stays server-side). `next build` type-checks clean; pages verified rendering live data
+- ⚠️ Recording *capture* (GCS upload from LiveKit egress) needs live telephony — schema and dashboard playback link are ready; carried to the pilot checklist
+
+**Exit-criteria status:**
+
+- [x] Simulated design-partner firm fully onboarded (admin API + `scripts/onboard_firm.py`): their script, their rules, their routing, their (mock) CMS — exercised end-to-end in tests and over live HTTP
+- [x] Call → qualification → booking → structured record in the CMS within seconds of hangup, **idempotent under forced retry** (event replayed: zero duplicate writes; consult re-booked with same key: same consult returned)
+- [x] RLS verified at the database (cross-tenant SELECT/INSERT as app role: nothing/rejected) and through the live API (firm B token sees zero of firm A's calls/leads)
+- [ ] **Blocked on accounts:** the same three Phase 0 credential items, plus a real Clio sandbox (OAuth app) to point the adapter at, and the latency-SLO regression check on real calls with the orchestration layer in the loop (instrumentation to measure it is in place; simulated-metric path already rolls up per call)
+
+**Remaining for Phase 1 exit (pilot checklist — accounts/keys, not code):**
+
+- [ ] Provision provider keys + LiveKit + Twilio (same blockers as Phase 0)
+- [ ] Register a Clio developer app, onboard a pilot firm with real Clio OAuth credentials, verify record-in-Clio-within-60s on a real call
+- [ ] Clio inbound webhooks (CMS → local state) once the Clio app exists
+- [ ] Wire LiveKit egress → recording upload + retention job (schema ready)
+- [ ] Re-verify p95 ≤ 800 ms on ≥20 real calls with the full orchestration layer in the loop
 
 ---
 

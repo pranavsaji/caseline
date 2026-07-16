@@ -27,9 +27,11 @@ REFER_OUT_INJURIES = {"minor", "none", "no injury", "property damage only"}
 
 @dataclass(frozen=True)
 class QualificationConfig:
-    """Firm-level knobs. Phase 1 loads this per firm; Phase 0 uses defaults."""
+    """Firm-level knobs. Phase 1 loads these from the firm's agent config
+    (jsonb on the agents row); Phase 0 callers use the defaults."""
 
     statute_of_limitations_days: int = 730  # 2 years, common PI default
+    refer_out_injuries: frozenset[str] = frozenset(REFER_OUT_INJURIES)
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,7 @@ def qualify(
     else:
         reasons.append(f"{date_problem}; needs human verification before decline")
 
-    if injury_type.strip().lower() in REFER_OUT_INJURIES:
+    if injury_type.strip().lower() in config.refer_out_injuries:
         return QualificationResult(
             decision=DECISION_REFER_OUT,
             reasons=reasons + [f"injury type {injury_type!r} is below the firm's threshold"],
