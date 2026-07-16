@@ -153,6 +153,25 @@ def test_active_label_follows_availability(monkeypatch):
     assert stack.active_label() == "anthropic:claude-haiku-4-5"
 
 
+def test_deepseek_is_the_default_llm_and_builds(monkeypatch):
+    # 2026-07-16: default switched anthropic -> deepseek on cost; deepseek
+    # rides the OpenAI-compatible plugin and auths via DEEPSEEK_API_KEY.
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("CASELINE_LLM_PROVIDERS", raising=False)
+    assert providers.parse_specs("llm", None) == [("deepseek", "deepseek-chat")]
+    stack = providers.build_llm()
+    assert stack.active_label() == "deepseek:deepseek-chat"
+    assert not isinstance(stack.adapter, lk_llm.FallbackAdapter)
+
+
+def test_deepseek_stacks_with_anthropic_failover(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    stack = providers.build_llm("deepseek:deepseek-chat,anthropic:claude-haiku-4-5")
+    assert isinstance(stack.adapter, lk_llm.FallbackAdapter)
+    assert stack.active_label() == "deepseek:deepseek-chat"
+
+
 def test_unknown_provider_rejected():
     with pytest.raises(ValueError, match="Unknown LLM provider"):
         providers.build_llm("nonsense:model-x")

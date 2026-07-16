@@ -366,7 +366,7 @@ Only after the core is boringly reliable:
 ## Top Risks and Mitigations
 
 1. **Latency misses the human threshold.** Mitigation: Phase 0 exists solely to test this; per-stage instrumentation from day one; playbook in architecture doc §9 applied in order of measured bottleneck.
-2. **Provider dependence** (pricing, deprecation, brownouts). Mitigation: cascading architecture + interfaces + Phase 2 failover; re-verify model/pricing quarterly (doc is explicit that this space moves fast).
+2. **Provider dependence** (pricing, deprecation, brownouts). Mitigation: cascading architecture + interfaces + Phase 2 failover; re-verify model/pricing quarterly (doc is explicit that this space moves fast). *2026-07-16: default LLM switched `anthropic:claude-haiku-4-5` → `deepseek:deepseek-chat` on cost — a config-only change, proving the seam. Open item: verify DeepSeek TTFT against the 800 ms turn budget on real calls (turn metrics already slice latency by provider); if it misses, switching back or stacking anthropic as primary is one env entry.*
 3. **CMS adapter fragility** — long-tail legal APIs are messy, poll-based, or partner-gated. Mitigation: normalized schema + ABC proven against three dissimilar providers (Clio/Filevine/Litify) before scaling breadth; adapters are demand-ordered.
 4. **Compliance incident** (advice given, consent violated, PHI leaked). Mitigation: guardrail pass in-pipeline from Phase 1, redaction before persistence in Phase 2, consent rules per state, human-transfer escape hatch always available.
 5. **Scope creep into channels before voice is solid.** Mitigation: phase gates — omnichannel (Phase 3) is blocked on hardening (Phase 2) exit criteria, no exceptions.

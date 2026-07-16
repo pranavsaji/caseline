@@ -98,7 +98,8 @@ def pg_admin_dsn(tmp_path_factory):
 
 
 _TENANT_TABLES = (
-    "idempotency_keys, turn_metrics, events, consults, messages, tasks, matters,"
+    "referrals, referral_partners, lead_reviews, voice_profiles,"
+    " idempotency_keys, turn_metrics, events, consults, messages, tasks, matters,"
     " leads, transcripts, calls, contacts, agents, firm_tokens, firms"
 )
 

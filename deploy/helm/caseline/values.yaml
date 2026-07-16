@@ -35,7 +35,7 @@ agent: # voice workers: one per active call + warm pool
   env:
     # Failover stacks (Phase 2 Workstream B): primary first, fallbacks after.
     CASELINE_STT_PROVIDERS: "deepgram:nova-3"
-    CASELINE_LLM_PROVIDERS: "anthropic:claude-haiku-4-5,openai:gpt-4.1-mini"
+    CASELINE_LLM_PROVIDERS: "deepseek:deepseek-chat,openai:gpt-4.1-mini"
     CASELINE_TTS_PROVIDERS: "cartesia:sonic-3,openai:tts-1"
   nodePool: agents
   resources:

@@ -10,7 +10,7 @@ turn, and the primary is probed in the background until it recovers.
 Env (single-entry lists mean "no failover", the Phase 0/1 behavior):
 
   CASELINE_STT_PROVIDERS=deepgram:nova-3[,openai:whisper-1]
-  CASELINE_LLM_PROVIDERS=anthropic:claude-haiku-4-5[,openai:gpt-4.1-mini]
+  CASELINE_LLM_PROVIDERS=deepseek:deepseek-chat[,anthropic:claude-haiku-4-5]
   CASELINE_TTS_PROVIDERS=cartesia:sonic-3[,openai:tts-1]
 
 Provider names appear here and in config only (cross-phase rule). The
@@ -28,7 +28,12 @@ logger = logging.getLogger("caseline.agent.providers")
 
 DEFAULTS = {
     "stt": "deepgram:nova-3",
-    "llm": "anthropic:claude-haiku-4-5",
+    # 2026-07-16: default LLM switched anthropic -> deepseek on cost.
+    # deepseek-chat is OpenAI-compatible (DEEPSEEK_API_KEY). TTFT must be
+    # re-verified against the 800 ms turn budget on real calls — turn metrics
+    # slice latency by provider, and anthropic stays one env entry away as
+    # primary or failover.
+    "llm": "deepseek:deepseek-chat",
     "tts": "cartesia:sonic-3",
 }
 
@@ -113,6 +118,11 @@ def _build_stt(provider: str, model: str) -> object:
 
 
 def _build_llm(provider: str, model: str) -> object:
+    if provider == "deepseek":
+        from livekit.plugins import openai
+
+        # OpenAI-compatible endpoint; auths via DEEPSEEK_API_KEY.
+        return openai.LLM.with_deepseek(model=model or "deepseek-chat")
     if provider == "anthropic":
         from livekit.plugins import anthropic
 
