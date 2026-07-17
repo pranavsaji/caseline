@@ -22,6 +22,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -106,7 +108,13 @@ def _current_time_line(timezone: str | None) -> str:
 
 
 class IntakeAgent(Agent):
-    def __init__(self, backend: BackendClient, call_id: str, config: dict | None):
+    def __init__(
+        self,
+        backend: BackendClient,
+        call_id: str,
+        config: dict | None,
+        on_guardrail: "Callable[[str, float], None] | None" = None,
+    ):
         config = config or {}
         instructions = config.get("instructions") or DEFAULT_INSTRUCTIONS
         # The model has no inherent sense of "now" and will otherwise guess the
@@ -125,6 +133,7 @@ class IntakeAgent(Agent):
             extra_blocked_patterns=guardrails.get("extra_blocked_patterns", [])
         )
         self._deflection = guardrails.get("deflection_line") or DEFAULT_DEFLECTION
+        self._on_guardrail = on_guardrail
 
     # --- guardrail pass between LLM and TTS (plan.md Workstream B) ---
 
@@ -132,9 +141,20 @@ class IntakeAgent(Agent):
         guard = StreamGuard(self._screen, self._deflection)
         deflected = False
         last_chunk = None
+        # Time only the guardrail's own work (regex screen per chunk), not the
+        # LLM wait, so guardrail_ms reflects the overhead the safety pass adds.
+        guard_secs = 0.0
+
+        def _feed(text: str):
+            nonlocal guard_secs
+            t0 = time.perf_counter()
+            out = guard.feed(text)
+            guard_secs += time.perf_counter() - t0
+            return out
+
         async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
             if isinstance(chunk, str):
-                released = None if guard.tripped else guard.feed(chunk)
+                released = None if guard.tripped else _feed(chunk)
                 if guard.tripped and not deflected:
                     deflected = True
                     yield ((released + " ") if released else "") + guard.deflection_line
@@ -152,7 +172,7 @@ class IntakeAgent(Agent):
                 if getattr(delta, "tool_calls", None):
                     yield chunk
                 continue
-            released = guard.feed(content)
+            released = _feed(content)
             if guard.tripped and not deflected:
                 deflected = True
                 logger.warning(
@@ -169,7 +189,9 @@ class IntakeAgent(Agent):
             elif getattr(delta, "tool_calls", None):
                 delta.content = None
                 yield chunk
+        t0 = time.perf_counter()
         remaining = guard.flush()
+        guard_secs += time.perf_counter() - t0
         if remaining:
             if last_chunk is not None and getattr(last_chunk, "delta", None) is not None:
                 final = last_chunk.model_copy(deep=True)
@@ -180,6 +202,16 @@ class IntakeAgent(Agent):
                 yield remaining
         elif guard.tripped and not deflected:
             yield guard.deflection_line
+
+        # Attribute this turn's guardrail overhead to its speech_id so it lands
+        # in the same per-turn latency sample as EOU/LLM/TTS.
+        if self._on_guardrail is not None:
+            try:
+                speech = self.session.current_speech
+                if speech is not None:
+                    self._on_guardrail(speech.id, guard_secs * 1000)
+            except Exception:  # instrumentation must never break a turn
+                logger.debug("guardrail latency report failed", exc_info=True)
 
     # --- typed tools: the LLM selects, the backend executes ---
 
@@ -427,8 +459,10 @@ async def entrypoint(ctx: JobContext) -> None:
             "call_id": call_id,
             "speech_id": turn.speech_id,
             "eou_delay_ms": turn.eou_delay_ms,
+            "stt_ms": turn.stt_ms,
             "llm_ttft_ms": turn.llm_ttft_ms,
             "tts_ttfb_ms": turn.tts_ttfb_ms,
+            "guardrail_ms": turn.guardrail_ms,
             "total_ms": turn.total_ms,
             # which providers are serving right now (failover-aware)
             "stt_provider": stt_stack.active_label(),
@@ -442,7 +476,7 @@ async def entrypoint(ctx: JobContext) -> None:
         usage.collect(ev.metrics)
         m = ev.metrics
         if isinstance(m, metrics.EOUMetrics):
-            _report(tracker.on_eou(m.speech_id, m.end_of_utterance_delay))
+            _report(tracker.on_eou(m.speech_id, m.end_of_utterance_delay, m.transcription_delay))
         elif isinstance(m, metrics.LLMMetrics):
             _report(tracker.on_llm(m.speech_id, m.ttft))
         elif isinstance(m, metrics.TTSMetrics):
@@ -457,7 +491,13 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_shutdown)
 
     await session.start(
-        agent=IntakeAgent(backend=backend, call_id=call_id, config=config), room=ctx.room
+        agent=IntakeAgent(
+            backend=backend,
+            call_id=call_id,
+            config=config,
+            on_guardrail=lambda sid, ms: _report(tracker.on_guardrail(sid, ms)),
+        ),
+        room=ctx.room,
     )
     await session.generate_reply(instructions=greeting)
 

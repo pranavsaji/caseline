@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -34,11 +37,13 @@ from api.platform import events as platform_events
 from api.platform.schemas import (
     AgentConfigUpdate,
     AssignVoiceRequest,
+    CallOutcomeRequest,
     CompleteCallRequest,
     CreateFirmRequest,
     CreateFirmResponse,
     CreateTokenRequest,
     CreateTokenResponse,
+    DialRequest,
     InboundSMSRequest,
     LeadReviewRequest,
     LeadWebhookRequest,
@@ -49,6 +54,7 @@ from api.platform.schemas import (
     ReferralStatusRequest,
     SendSMSRequest,
     TakeMessageRequest,
+    ThreadMessageRequest,
     ToolQualifyRequest,
     ToolScheduleRequest,
     TrackerEnrollRequest,
@@ -328,16 +334,18 @@ def post_turn_metrics(
     with p.db.firm(firm.firm_id) as conn:
         conn.execute(
             "INSERT INTO turn_metrics"
-            " (firm_id, call_id, speech_id, eou_delay_ms, llm_ttft_ms, tts_ttfb_ms, total_ms,"
-            "  stt_provider, llm_provider, tts_provider)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " (firm_id, call_id, speech_id, eou_delay_ms, stt_ms, llm_ttft_ms, tts_ttfb_ms,"
+            "  guardrail_ms, total_ms, stt_provider, llm_provider, tts_provider)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 firm.firm_id,
                 req.call_id,
                 req.speech_id,
                 req.eou_delay_ms,
+                req.stt_ms,
                 req.llm_ttft_ms,
                 req.tts_ttfb_ms,
+                req.guardrail_ms,
                 req.total_ms,
                 req.stt_provider,
                 req.llm_provider,
@@ -379,6 +387,136 @@ def call_latency_summary(
 # ---------------------------------------------------------------------------
 
 
+_E164 = re.compile(r"^\+[1-9]\d{6,14}$")
+
+
+def _normalize_e164(raw: str) -> str | None:
+    """Best-effort coercion of a loosely typed number to E.164.
+
+    Accepts already-E.164 input, and forgives common US/NANP formats that
+    operators paste from a screen: spaces, dashes, parens, a leading "1", or a
+    bare 10-digit number (assumed US, gets +1). Returns None if it can't be
+    confidently normalized so the caller can 422.
+    """
+    s = raw.strip()
+    if not s:
+        return None
+    if s.startswith("+"):
+        digits = re.sub(r"\D", "", s)
+        candidate = "+" + digits
+    else:
+        digits = re.sub(r"\D", "", s)
+        if len(digits) == 10:
+            candidate = "+1" + digits
+        elif len(digits) == 11 and digits.startswith("1"):
+            candidate = "+" + digits
+        else:
+            candidate = "+" + digits
+    return candidate if _E164.match(candidate) else None
+
+
+@router.post("/calls/dial")
+def dial_call(
+    req: DialRequest, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Operator-initiated outbound call from the dashboard.
+
+    Reuses the same transport as the Digital Lead Chaser: create a LiveKit
+    room, record a `calls` row, emit `call.outbound_requested`, and hand the
+    dial to the configured dialer. The agent worker joins the room and runs
+    the firm's intake brain exactly like an inbound call. When no SIP
+    outbound trunk is configured (`CASELINE_SIP_OUTBOUND_TRUNK_ID` unset),
+    `make_dialer()` returns the `LoggingDialer`, so the attempt is recorded
+    but not placed — `placed` is false and no telephony charge occurs.
+    """
+    to_number = _normalize_e164(req.to_number)
+    if to_number is None:
+        raise HTTPException(status_code=422, detail="to_number must be E.164, e.g. +14155550123")
+    p = _platform(request)
+    import uuid
+
+    room = f"outbound-manual-{uuid.uuid4().hex[:12]}"
+    with p.db.firm(firm.firm_id) as conn:
+        agent_id = req.agent_id
+        if agent_id is None:
+            config = load_agent_config(p.db, p.session_store, firm.firm_id)
+            agent_id = config.agent_id if config else None
+        conn.execute(
+            "INSERT INTO calls (id, firm_id, agent_id, direction, to_number)"
+            " VALUES (%s, %s, %s, 'out', %s) ON CONFLICT (firm_id, id) DO NOTHING",
+            (room, firm.firm_id, agent_id, to_number),
+        )
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "call.outbound_requested",
+            {"call_id": room, "to": to_number, "purpose": req.purpose,
+             "dialer": p.dialer.name, "manual": True},
+        )
+    provider_id = p.dialer.dial(
+        to_number, room, metadata={"firm_id": firm.firm_id, "purpose": req.purpose, "manual": True}
+    )
+    placed = p.dialer.name != "logging"
+    return {
+        "call_id": room,
+        "room": room,
+        "to_number": to_number,
+        "dialer": p.dialer.name,
+        "provider_id": provider_id,
+        "placed": placed,
+        "note": None if placed
+        else "Recorded as dry-run: no SIP outbound trunk configured (set CASELINE_SIP_OUTBOUND_TRUNK_ID to place real calls).",
+    }
+
+
+@router.post("/calls/web-session")
+def web_session(
+    request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Browser voice test: talk to the intake agent live over WebRTC, no phone.
+
+    Mints a LiveKit access token for a browser participant to join a fresh
+    room. The same agent worker that answers phone calls auto-dispatches to
+    the room and runs the firm's intake brain — identical STT/LLM/TTS pipeline,
+    guardrails, and tools — with the caller's mic/speaker in place of the SIP
+    leg. No SIP outbound trunk, no telephony charge, no phone number involved.
+    Requires LIVEKIT_URL/API_KEY/API_SECRET and the agent worker running.
+    """
+    url = os.getenv("LIVEKIT_URL")
+    key = os.getenv("LIVEKIT_API_KEY")
+    secret = os.getenv("LIVEKIT_API_SECRET")
+    if not (url and key and secret):
+        raise HTTPException(
+            status_code=503,
+            detail="LiveKit not configured (set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET).",
+        )
+    from livekit import api as lk_api
+
+    room = f"web-manual-{uuid.uuid4().hex[:12]}"
+    identity = f"web-tester-{uuid.uuid4().hex[:6]}"
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        agent_id = load_agent_config(p.db, p.session_store, firm.firm_id)
+        agent_id = agent_id.agent_id if agent_id else None
+        conn.execute(
+            "INSERT INTO calls (id, firm_id, agent_id, direction)"
+            " VALUES (%s, %s, %s, 'in') ON CONFLICT (firm_id, id) DO NOTHING",
+            (room, firm.firm_id, agent_id),
+        )
+        platform_events.emit(
+            conn, firm.firm_id, "call.web_requested", {"call_id": room, "manual": True}
+        )
+    token = (
+        lk_api.AccessToken(key, secret)
+        .with_identity(identity)
+        .with_name("Web Tester")
+        .with_grants(lk_api.VideoGrants(room_join=True, room=room, can_publish=True,
+                                        can_subscribe=True, can_publish_data=True))
+        .to_jwt()
+    )
+    return {"room": room, "url": url, "token": token, "identity": identity}
+
+
 @router.get("/calls")
 def list_calls(
     request: Request, limit: int = 50, firm: auth.AuthedFirm = Depends(auth.require_firm)
@@ -410,8 +548,8 @@ def get_call(
             (call_id,),
         ).fetchone()
         metrics = conn.execute(
-            "SELECT speech_id, eou_delay_ms, llm_ttft_ms, tts_ttfb_ms, total_ms,"
-            "       stt_provider, llm_provider, tts_provider"
+            "SELECT speech_id, eou_delay_ms, stt_ms, llm_ttft_ms, tts_ttfb_ms, guardrail_ms,"
+            "       total_ms, stt_provider, llm_provider, tts_provider"
             " FROM turn_metrics WHERE call_id = %s ORDER BY id",
             (call_id,),
         ).fetchall()
@@ -430,6 +568,35 @@ def get_call(
         "transcript_redacted": not raw_allowed,
         "turn_metrics": metrics,
     }
+
+
+@router.post("/calls/{call_id}/outcome")
+def set_call_outcome(
+    call_id: str,
+    req: CallOutcomeRequest,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Manual disposition override. The agent classifies every call, but a human
+    can correct it here — the outcome the analytics funnel and CMS notes read."""
+    outcome = req.outcome.strip()
+    if not outcome:
+        raise HTTPException(status_code=422, detail="outcome must not be blank")
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        row = conn.execute(
+            "UPDATE calls SET outcome = %s WHERE id = %s RETURNING id",
+            (outcome, call_id),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Call not found")
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "call.outcome_overridden",
+            {"call_id": call_id, "outcome": outcome, "note": req.note},
+        )
+    return {"status": "updated", "call_id": call_id, "outcome": outcome}
 
 
 @router.get("/leads")
@@ -786,6 +953,25 @@ def get_thread(
     }
 
 
+@router.post("/threads/{thread_id}/message")
+def send_thread_message(
+    thread_id: str,
+    req: ThreadMessageRequest,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Send a staff-authored follow-up on an open thread — the manual override
+    of the automated chaser. Guardrail-screened like every other outbound send;
+    disarms the pending no-reply nudge so the client isn't double-contacted."""
+    engine = _thread_engine(request)
+    try:
+        return engine.send_manual_message(firm.firm_id, thread_id, req.body)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Thread not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/tracker/enroll")
 def tracker_enroll(
     req: TrackerEnrollRequest, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
@@ -968,7 +1154,7 @@ def create_voice_profile(
     """Create a branded voice for the firm. The clone provider runs off the
     hot path (this is an onboarding action, not a call action); the profile
     only becomes assignable once the provider returns a voice id."""
-    from api.voice import VoiceCloneError
+    from api.voice import VoiceCloneError, _decode_data_uri
 
     if not req.consent_confirmed:
         raise HTTPException(
@@ -976,17 +1162,32 @@ def create_voice_profile(
             detail="Voice cloning requires the voice owner's recorded consent"
             " (consent_confirmed=true)",
         )
+    # Inline audio (browser recording / file upload) arrives as a base64 data
+    # URI. Decode it to bytes here and persist only a compact marker as
+    # sample_uri — never the megabyte-scale blob (it ships back on every list).
+    audio: bytes | None = None
+    audio_mime: str | None = None
+    stored_uri = req.sample_uri
+    if req.sample_data:
+        try:
+            audio = _decode_data_uri(req.sample_data)
+        except VoiceCloneError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        audio_mime = req.sample_data[5:].split(";", 1)[0] or None
+        stored_uri = f"inline:{audio_mime or 'audio'}:{len(audio)}b"
     p = _platform(request)
     cloner = p.voice_cloner
     with p.db.firm(firm.firm_id) as conn:
         row = conn.execute(
             "INSERT INTO voice_profiles (firm_id, name, provider, sample_uri, consent_confirmed)"
             " VALUES (%s, %s, %s, %s, true) RETURNING id",
-            (firm.firm_id, req.name, cloner.name, req.sample_uri),
+            (firm.firm_id, req.name, cloner.name, stored_uri),
         ).fetchone()
     profile_id = str(row["id"])
     try:
-        voice_id = cloner.create_voice(req.name, req.sample_uri, req.description)
+        voice_id = cloner.create_voice(
+            req.name, stored_uri, req.description, audio=audio, audio_mime=audio_mime
+        )
     except VoiceCloneError as exc:
         with p.db.firm(firm.firm_id) as conn:
             conn.execute(
@@ -1124,6 +1325,62 @@ def tuning_suggestions(
         ],
         "current_rules": config.qualification.model_dump(),
         "proposed_rules": report.proposed_rules,
+    }
+
+
+@router.post("/tuning/apply")
+def apply_tuning(
+    request: Request, days: int = 90, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    """Apply the engine's proposed qualification rules to the live intake agent.
+    Proposed rules are recomputed server-side (never trusting a client payload)
+    and pushed through the same validated config path every other edit uses, so
+    the change reaches the next call in seconds."""
+    from api import tuning
+
+    days = min(max(days, 1), 365)
+    p = _platform(request)
+    config = load_agent_config(p.db, p.session_store, firm.firm_id)
+    if config is None:
+        raise HTTPException(status_code=409, detail="Firm has no configured agent")
+    with p.db.firm(firm.firm_id) as conn:
+        rows = conn.execute(
+            "SELECT r.verdict, l.qualification, l.created_at"
+            " FROM lead_reviews r JOIN leads l ON l.id = r.lead_id"
+            " WHERE r.created_at > now() - make_interval(days => %s)"
+            "   AND l.qualification IS NOT NULL",
+            (days,),
+        ).fetchall()
+    samples = [
+        tuning.sample_from_row(r["verdict"], r["qualification"], r["created_at"].date())
+        for r in rows
+    ]
+    report = tuning.analyze_reviews(samples, config.qualification)
+    if not report.proposed_rules:
+        raise HTTPException(status_code=409, detail="No proposed rule changes to apply")
+    try:
+        updated = update_agent_config(
+            p.db,
+            p.session_store,
+            firm.firm_id,
+            config.agent_id,
+            qualification_rules=report.proposed_rules,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Intake agent not found")
+    with p.db.firm(firm.firm_id) as conn:
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "tuning.applied",
+            {"agent_id": config.agent_id, "reviews": report.reviews},
+        )
+    return {
+        "status": "applied",
+        "agent_id": config.agent_id,
+        "applied_rules": report.proposed_rules,
     }
 
 

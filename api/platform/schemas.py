@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # --- admin / onboarding ---
@@ -148,6 +148,35 @@ class TrackerEnrollRequest(BaseModel):
     cadence_days: int = Field(default=14, ge=1, le=90)
 
 
+class ThreadMessageRequest(BaseModel):
+    """Staff-authored outbound message on an open thread. Screened by the same
+    guardrail as every automated send before it reaches the client."""
+
+    body: str = Field(min_length=1, max_length=1000)
+
+
+class CallOutcomeRequest(BaseModel):
+    """Manual disposition override on a call — the human correction of what the
+    agent recorded (or a disposition for a call the agent never classified)."""
+
+    outcome: str = Field(min_length=1, max_length=60)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class DialRequest(BaseModel):
+    """Operator-initiated outbound call. Unlike the automated Digital Lead
+    Chaser (which requires prior express consent under TCPA), this is a
+    human-triggered call from the dashboard — e.g. a firm calling a partner
+    firm or ringing a test number to hear the agent. The endpoint still
+    format-checks the number and records the attempt as a `calls` row."""
+
+    to_number: str = Field(description="E.164 destination, e.g. +14155550123")
+    agent_id: str | None = Field(
+        default=None, description="Agent whose brain runs the call; defaults to the firm's intake agent"
+    )
+    purpose: str | None = Field(default=None, max_length=200)
+
+
 class PreviewRequest(BaseModel):
     """Config-studio test-call preview: caller messages + optional unsaved
     config overrides, simulated through the same brain with zero side effects."""
@@ -164,12 +193,23 @@ class PreviewRequest(BaseModel):
 
 class VoiceProfileCreate(BaseModel):
     """Branded/cloned voice request. Consent is structural: the API refuses
-    without it and the schema CHECK refuses again."""
+    without it and the schema CHECK refuses again.
+
+    The audio sample arrives one of two ways: ``sample_uri`` (a pre-hosted
+    http(s) URL) or ``sample_data`` (an inline ``data:audio/…;base64,…`` URI
+    from an in-browser recording or file upload). Exactly one is required."""
 
     name: str
-    sample_uri: str
+    sample_uri: str | None = None
+    sample_data: str | None = None
     consent_confirmed: bool = False
     description: str | None = None
+
+    @model_validator(mode="after")
+    def _require_a_sample(self) -> "VoiceProfileCreate":
+        if not self.sample_uri and not self.sample_data:
+            raise ValueError("provide sample_uri (http(s) URL) or sample_data (uploaded/recorded audio)")
+        return self
 
 
 class AssignVoiceRequest(BaseModel):
@@ -211,6 +251,11 @@ class TurnMetricsV1(BaseModel):
     llm_ttft_ms: float
     tts_ttfb_ms: float
     total_ms: float
+    # Supplementary per-stage timings (nullable; not part of total_ms):
+    #  - stt_ms: STT-finalization slice of the EOU delay (transcription delay).
+    #  - guardrail_ms: regex guardrail screening time between LLM and TTS.
+    stt_ms: float | None = None
+    guardrail_ms: float | None = None
     # Which providers actually served the turn (failover makes this dynamic);
     # lets latency dashboards slice by provider (Phase 2 Workstream D).
     stt_provider: str | None = None
