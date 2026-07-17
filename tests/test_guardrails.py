@@ -2,9 +2,45 @@
 
 import time
 
-from api.orchestration.guardrails import GuardrailScreen, StreamGuard
+from api.orchestration.guardrails import (
+    FunctionCallStripper,
+    GuardrailScreen,
+    StreamGuard,
+)
 
 SCREEN = GuardrailScreen()
+
+
+def _strip(deltas: list[str]) -> str:
+    s = FunctionCallStripper()
+    return "".join(s.feed(d) for d in deltas) + s.flush()
+
+
+def test_stripper_removes_emitted_tool_call_text():
+    # A model that writes a tool call as content instead of calling it natively.
+    out = _strip(['Sure, let me help. ', '<function=qualify_lead>{"injury":"x"}</function>', ' Done.'])
+    assert "<function" not in out and "qualify_lead" not in out
+    assert "Sure, let me help." in out and "Done." in out
+
+
+def test_stripper_handles_tags_split_across_deltas():
+    # Opening tag, JSON, and closer arrive in separate deltas.
+    out = _strip(['Booking now. <func', 'tion=schedule_consult>{"slot":', '"2pm"}</func', 'tion> All set.'])
+    assert "<function" not in out and "schedule_consult" not in out
+    assert "Booking now." in out and "All set." in out
+
+
+def test_stripper_handles_bare_function_closer_and_multiple_spans():
+    out = _strip(['A <function=a>{}</function> B <function=end_call><function> C'])
+    assert out.replace(" ", "") == "ABC".replace(" ", "") or ("A" in out and "B" in out and "C" in out)
+    assert "<function" not in out
+
+
+def test_stripper_leaves_normal_speech_untouched():
+    text = "I understand. Could you tell me your name and what happened?"
+    assert _strip([text]) == text
+    # A dangling partial tag at end of stream is dropped, not leaked.
+    assert "<function" not in _strip(["All good. <func"])
 
 
 def test_legal_advice_is_blocked():

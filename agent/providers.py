@@ -63,12 +63,15 @@ def _cartesia_http_session():
 
 DEFAULTS = {
     "stt": "deepgram:nova-3",
-    # 2026-07-16: voice LLM default is groq (measured median TTFT 376 ms —
-    # fits the 800 ms turn SLO; deepseek's 748 ms did not) with deepseek as
-    # failover. Both are OpenAI-compatible endpoints, keys via
-    # GROQ_API_KEY / DEEPSEEK_API_KEY. Re-verify on real calls — turn metrics
-    # slice latency by provider; anthropic stays one env entry away.
-    "llm": "groq:llama-3.3-70b-versatile,deepseek:deepseek-chat",
+    # 2026-07-17: voice LLM default is deepseek, with groq as failover. groq's
+    # llama-3.3-70b had lower TTFT but frequently emitted tool calls as literal
+    # text ("<function=qualify_lead>{...}</function>") instead of using the
+    # native tool-calling channel — the machinery leaked to callers AND the
+    # tools often didn't actually run. deepseek tool-calls reliably. groq stays
+    # as a talking-degraded fallback, guarded by FunctionCallStripper so its
+    # stray tool-text can never reach a caller. Keys via
+    # DEEPSEEK_API_KEY / GROQ_API_KEY; anthropic stays one env entry away.
+    "llm": "deepseek:deepseek-chat,groq:llama-3.3-70b-versatile",
     "tts": "cartesia:sonic-3",
 }
 

@@ -144,3 +144,83 @@ class StreamGuard:
             return None
         remaining, self._buffer = self._buffer, ""
         return self._release(remaining)
+
+
+_FUNC_OPEN = "<function"
+_FUNC_CLOSERS = ("</function>", "<function>")
+_MAX_CLOSER = max(len(c) for c in _FUNC_CLOSERS)
+
+
+class FunctionCallStripper:
+    """Delete emitted-as-text tool calls from a streamed response.
+
+    Some models (notably llama-3.x) sometimes write a tool call as literal
+    content — ``<function=qualify_lead>{...}</function>`` — instead of using the
+    native tool-calling channel. That machinery must never be spoken or shown to
+    the caller. This is a streaming filter: once it sees an opening ``<function``
+    tag it suppresses everything until a closer (``</function>`` or the bare
+    ``<function>`` some models emit), then resumes. It holds back only a short
+    tail so a tag split across deltas is still caught. Note: this drops the
+    *text*; it does not execute the call — the real fix is a model that tool-calls
+    natively (see agent.providers). This is defense-in-depth against a leak."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._suppressing = False
+
+    @staticmethod
+    def _first_closer(s: str) -> tuple[int, int] | None:
+        best: tuple[int, int] | None = None
+        for c in _FUNC_CLOSERS:
+            i = s.find(c)
+            if i != -1 and (best is None or i < best[0]):
+                best = (i, len(c))
+        return best
+
+    @staticmethod
+    def _open_tail(s: str) -> int:
+        """Length of a suffix of s that is a proper prefix of ``<function``."""
+        for k in range(min(len(s), len(_FUNC_OPEN)), 0, -1):
+            if s.endswith(_FUNC_OPEN[:k]):
+                return k
+        return 0
+
+    def feed(self, delta: str) -> str:
+        self._buf += delta
+        out: list[str] = []
+        while self._buf:
+            if self._suppressing:
+                closer = self._first_closer(self._buf)
+                if closer is None:
+                    # No complete closer yet; keep only a tail that could be a
+                    # partial one and drop the rest of the suppressed region.
+                    if len(self._buf) > _MAX_CLOSER - 1:
+                        self._buf = self._buf[-(_MAX_CLOSER - 1) :]
+                    return "".join(out)
+                self._buf = self._buf[closer[0] + closer[1] :]
+                self._suppressing = False
+            else:
+                oi = self._buf.find(_FUNC_OPEN)
+                if oi == -1:
+                    keep = self._open_tail(self._buf)
+                    if keep:
+                        out.append(self._buf[:-keep])
+                        self._buf = self._buf[-keep:]
+                    else:
+                        out.append(self._buf)
+                        self._buf = ""
+                    return "".join(out)
+                out.append(self._buf[:oi])
+                self._buf = self._buf[oi:]
+                self._suppressing = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        """End of stream: drop a dangling suppressed region or partial tag."""
+        if self._suppressing:
+            self._buf = ""
+            return ""
+        out, self._buf = self._buf, ""
+        if out.startswith(_FUNC_OPEN) or _FUNC_OPEN.startswith(out):
+            return ""
+        return out

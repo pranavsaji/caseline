@@ -46,7 +46,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from agent import providers
 from agent.backend_client import BackendClient
 from agent.latency import TurnLatencyTracker, TurnSample
-from api.orchestration.guardrails import GuardrailScreen, StreamGuard
+from api.orchestration.guardrails import FunctionCallStripper, GuardrailScreen, StreamGuard
 
 load_dotenv()
 logger = logging.getLogger("caseline.agent")
@@ -141,14 +141,18 @@ class IntakeAgent(Agent):
         guard = StreamGuard(self._screen, self._deflection)
         deflected = False
         last_chunk = None
-        # Time only the guardrail's own work (regex screen per chunk), not the
-        # LLM wait, so guardrail_ms reflects the overhead the safety pass adds.
+        # Strip any tool-call syntax a model emits as text (llama does this)
+        # before it can be spoken/shown, then run the content guardrail.
+        stripper = FunctionCallStripper()
+        # Time only the safety pass's own work (strip + regex screen per chunk),
+        # not the LLM wait, so guardrail_ms reflects the overhead it adds.
         guard_secs = 0.0
 
         def _feed(text: str):
             nonlocal guard_secs
             t0 = time.perf_counter()
-            out = guard.feed(text)
+            clean = stripper.feed(text)
+            out = guard.feed(clean) if clean else None
             guard_secs += time.perf_counter() - t0
             return out
 
@@ -190,7 +194,12 @@ class IntakeAgent(Agent):
                 delta.content = None
                 yield chunk
         t0 = time.perf_counter()
-        remaining = guard.flush()
+        # Drain the stripper's tail into the guard, then flush the guard.
+        stripped_tail = stripper.flush()
+        released = guard.feed(stripped_tail) if stripped_tail else None
+        flushed = guard.flush()
+        parts = [p for p in (released, flushed) if p]
+        remaining = " ".join(parts) if parts else None
         guard_secs += time.perf_counter() - t0
         if remaining:
             if last_chunk is not None and getattr(last_chunk, "delta", None) is not None:
