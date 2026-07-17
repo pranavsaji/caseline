@@ -168,6 +168,16 @@ def get_agent_config(
     }
 
 
+@router.get("/llm-providers")
+def get_llm_providers(firm: auth.AuthedFirm = Depends(auth.require_firm)) -> dict:
+    """Catalog of selectable LLM providers/models for the Config Studio. Each
+    entry reports whether its API key is present in the environment so the UI
+    can flag providers that still need a key added to .env."""
+    from agent import providers
+
+    return {"providers": providers.llm_catalog()}
+
+
 @router.put("/agents/{agent_id}/config")
 def put_agent_config(
     agent_id: str,
@@ -187,6 +197,7 @@ def put_agent_config(
             qualification_rules=req.qualification_rules,
             guardrails=req.guardrails,
             voice_id=req.voice_id,
+            llm_config=req.llm_config,
         )
     except ValueError as exc:  # pydantic validation of a bad config
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -532,7 +543,12 @@ def list_calls(
     with p.db.firm(firm.firm_id) as conn:
         rows = conn.execute(
             "SELECT id, direction, from_number, started_at, ended_at, outcome, caller_type,"
-            "       summary, latency_p50_ms, latency_p95_ms, recording_uri"
+            "       summary, latency_p50_ms, latency_p95_ms, recording_uri,"
+            # Booking is a distinct dimension from `outcome`: a call can be
+            # qualified AND booked. Derived from the consults table (via the
+            # lead) so it never fights the qualification decision on write.
+            "       EXISTS (SELECT 1 FROM consults c JOIN leads l ON c.lead_id = l.id"
+            "               WHERE l.call_id = calls.id) AS booked"
             " FROM calls ORDER BY started_at DESC LIMIT %s",
             (min(limit, 200),),
         ).fetchall()
@@ -560,6 +576,14 @@ def get_call(
             " FROM turn_metrics WHERE call_id = %s ORDER BY id",
             (call_id,),
         ).fetchall()
+        # Booking lives in the consults table (linked via the lead), separate
+        # from `outcome`. Surface it as its own flag so the UI can show
+        # "Qualified · Consult booked" rather than losing one signal.
+        consult = conn.execute(
+            "SELECT c.slot_at FROM consults c JOIN leads l ON c.lead_id = l.id"
+            " WHERE l.call_id = %s ORDER BY c.slot_at DESC LIMIT 1",
+            (call_id,),
+        ).fetchone()
     turns: list = []
     if transcript:
         if raw_allowed:
@@ -574,6 +598,8 @@ def get_call(
         "transcript": turns,
         "transcript_redacted": not raw_allowed,
         "turn_metrics": metrics,
+        "booked": consult is not None,
+        "consult_slot_at": str(consult["slot_at"]) if consult else None,
     }
 
 
@@ -724,6 +750,16 @@ def analytics_outcomes(
             " WHERE created_at > now() - make_interval(days => %s)",
             (days,),
         ).fetchone()["n"]
+        # Call-level booking: how many calls resulted in a consult. Distinct
+        # from the lead-level booking_rate below — booked calls otherwise hide
+        # inside the "qualified" bucket of the outcomes breakdown.
+        calls_booked = conn.execute(
+            "SELECT count(DISTINCT ca.id) AS n FROM calls ca"
+            " JOIN leads l ON l.call_id = ca.id"
+            " JOIN consults c ON c.lead_id = l.id"
+            " WHERE ca.started_at > now() - make_interval(days => %s)",
+            (days,),
+        ).fetchone()["n"]
         transfers = conn.execute(
             "SELECT count(*) AS n FROM events"
             " WHERE type = 'call.transfer_requested'"
@@ -741,9 +777,11 @@ def analytics_outcomes(
         "leads": leads["total"],
         "qualified_leads": leads["qualified"],
         "consults_booked": consults,
+        "calls_booked": calls_booked,
         "transfers": transfers,
         "qualification_rate": rate(leads["qualified"], leads["total"]),
         "booking_rate": rate(consults, leads["qualified"]),
+        "call_booking_rate": rate(calls_booked, calls["total"]),
         "transfer_rate": rate(transfers, calls["total"]),
         "abandonment_rate": rate(calls["abandoned"], calls["total"]),
     }
@@ -1231,6 +1269,22 @@ def list_voice_profiles(
     return [{**r, "id": str(r["id"]), "created_at": str(r["created_at"])} for r in rows]
 
 
+@router.get("/voice-library")
+def list_voice_library(
+    request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> list[dict]:
+    """Provider preset/library voices, selectable alongside the firm's own
+    cloned profiles. Read-only; if the provider is unreachable this degrades
+    to an empty list so the picker still offers cloned voices."""
+    from api.voice import VoiceCloneError
+
+    try:
+        return _platform(request).voice_cloner.list_voices()
+    except VoiceCloneError as exc:
+        logger.warning("voice library unavailable: %s", exc)
+        return []
+
+
 @router.post("/agents/{agent_id}/voice")
 def assign_agent_voice(
     agent_id: str,
@@ -1238,28 +1292,41 @@ def assign_agent_voice(
     request: Request,
     firm: auth.AuthedFirm = Depends(auth.require_firm),
 ) -> dict:
-    """Point an agent at a ready voice profile. Goes through
-    update_agent_config so the config cache invalidates and the very next
-    call speaks in the firm's voice."""
+    """Point an agent at a voice — a ready cloned profile or a provider preset.
+    Sets the single agent voice used by every channel (web and phone alike).
+    Goes through update_agent_config so the config cache invalidates and the
+    very next call speaks in the chosen voice."""
     p = _platform(request)
-    with p.db.firm(firm.firm_id) as conn:
-        profile = conn.execute(
-            "SELECT status, provider_voice_id FROM voice_profiles WHERE id = %s",
-            (req.voice_profile_id,),
-        ).fetchone()
-    if profile is None:
-        raise HTTPException(status_code=404, detail="Voice profile not found")
-    if profile["status"] != "ready" or not profile["provider_voice_id"]:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Voice profile is {profile['status']}; only ready voices reach callers",
-        )
+    if req.voice_id:
+        # Preset/library voice: the provider voice id is set directly. Validate
+        # the shape (Cartesia voice ids are UUIDs) so a typo can't mute callers.
+        voice_id = req.voice_id.strip()
+        try:
+            uuid.UUID(voice_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="voice_id must be a provider voice UUID"
+            ) from exc
+    else:
+        with p.db.firm(firm.firm_id) as conn:
+            profile = conn.execute(
+                "SELECT status, provider_voice_id FROM voice_profiles WHERE id = %s",
+                (req.voice_profile_id,),
+            ).fetchone()
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Voice profile not found")
+        if profile["status"] != "ready" or not profile["provider_voice_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Voice profile is {profile['status']}; only ready voices reach callers",
+            )
+        voice_id = profile["provider_voice_id"]
     updated = update_agent_config(
-        p.db, p.session_store, firm.firm_id, agent_id, voice_id=profile["provider_voice_id"]
+        p.db, p.session_store, firm.firm_id, agent_id, voice_id=voice_id
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Agent not found")
-    return {"status": "assigned", "voice_id": profile["provider_voice_id"]}
+    return {"status": "assigned", "voice_id": voice_id}
 
 
 @router.post("/leads/{lead_id}/review")

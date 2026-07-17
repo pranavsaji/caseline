@@ -129,6 +129,7 @@ export default async function Analytics() {
         <StatTile label="Calls" value={outcomes.calls} footer={`last ${outcomes.days} days`} />
         <StatTile label="Qualification rate" value={pct(outcomes.qualification_rate)} footer={`${outcomes.leads} leads`} />
         <StatTile label="Booking rate" value={pct(outcomes.booking_rate)} footer={`${outcomes.consults_booked} booked`} />
+        <StatTile label="Booked rate (calls)" value={pct(outcomes.call_booking_rate)} footer={`${outcomes.calls_booked} of ${outcomes.calls} calls`} />
       </TileRow>
 
       <Card title="Call outcomes" className="stackCard">

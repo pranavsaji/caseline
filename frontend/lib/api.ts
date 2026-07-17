@@ -4,12 +4,34 @@
 
 const BASE = process.env.CASELINE_API_URL ?? "http://localhost:8000";
 const TOKEN = process.env.CASELINE_FIRM_TOKEN ?? "";
+const ADMIN_TOKEN = process.env.CASELINE_ADMIN_TOKEN ?? "";
 
 async function api(path: string, init?: RequestInit) {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`${init?.method ?? "GET"} ${path} -> ${res.status}: ${await res.text()}`);
+  }
+  return res.json();
+}
+
+// Admin-scoped client — uses the deploy-level shared secret (X-Admin-Token),
+// never the firm token. Only reachable server-side; the token never ships to
+// the browser. `adminEnabled` lets pages hide admin surfaces when unset.
+export const adminEnabled = ADMIN_TOKEN.length > 0;
+
+async function adminApi(path: string, init?: RequestInit) {
+  const res = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: {
+      "X-Admin-Token": ADMIN_TOKEN,
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
@@ -33,6 +55,10 @@ export type Call = {
   latency_p50_ms: number | null;
   latency_p95_ms: number | null;
   recording_uri: string | null;
+  // Booking is tracked separately from `outcome`: a call can be qualified AND
+  // have a consult booked. Derived server-side from the consults table.
+  booked?: boolean;
+  consult_slot_at?: string | null;
 };
 
 export type Lead = {
@@ -55,9 +81,11 @@ export type OutcomeAnalytics = {
   leads: number;
   qualified_leads: number;
   consults_booked: number;
+  calls_booked: number;
   transfers: number;
   qualification_rate: number | null;
   booking_rate: number | null;
+  call_booking_rate: number | null;
   transfer_rate: number | null;
   abandonment_rate: number | null;
 };
@@ -87,6 +115,20 @@ export const getLatencyAnalytics = (days = 7) =>
   api(`/v1/analytics/latency?days=${days}`) as Promise<LatencyAnalytics>;
 export const putAgentConfig = (agentId: string, body: unknown) =>
   api(`/v1/agents/${agentId}/config`, { method: "PUT", body: JSON.stringify(body) });
+
+// --- LLM model selection (Config Studio) ---
+
+export type LlmProvider = {
+  provider: string;
+  label: string;
+  env_key: string | null;
+  key_present: boolean;
+  default_model: string;
+  models: string[];
+};
+
+export const getLlmProviders = () =>
+  api("/v1/llm-providers") as Promise<{ providers: LlmProvider[] }>;
 
 // --- Phase 3: omnichannel ---
 
@@ -218,3 +260,149 @@ export const listReferrals = () => api("/v1/referrals") as Promise<Referral[]>;
 export const listReferralPartners = () =>
   api("/v1/referral-partners") as Promise<ReferralPartner[]>;
 export const listVoiceProfiles = () => api("/v1/voice-profiles") as Promise<VoiceProfile[]>;
+
+export type LibraryVoice = {
+  id: string;
+  name: string;
+  description: string | null;
+  language: string | null;
+  gender: string | null;
+};
+
+// Provider preset/library voices, selectable alongside the firm's own clones.
+export const listVoiceLibrary = () => api("/v1/voice-library") as Promise<LibraryVoice[]>;
+
+// --- Outbound calling (operator-initiated) ---
+
+export type DialResult = {
+  call_id: string;
+  room: string;
+  to_number: string;
+  dialer: string;
+  provider_id: string;
+  placed: boolean;
+  note: string | null;
+};
+
+export const dialCall = (body: {
+  to_number: string;
+  agent_id?: string;
+  purpose?: string;
+}) =>
+  api("/v1/calls/dial", { method: "POST", body: JSON.stringify(body) }) as Promise<DialResult>;
+
+// Browser voice test: server mints a LiveKit token; the browser joins the room
+// and talks to the intake agent over WebRTC (no phone, no telephony charge).
+export type WebSession = {
+  room: string;
+  url: string;
+  token: string;
+  identity: string;
+};
+
+export const startWebSession = () =>
+  api("/v1/calls/web-session", { method: "POST" }) as Promise<WebSession>;
+
+// --- Write actions surfacing existing backend endpoints ---
+
+export const createVoiceProfile = (body: {
+  name: string;
+  // One of sample_uri (pre-hosted http(s) URL) or sample_data (inline
+  // base64 data URI from an in-browser recording / file upload) is required.
+  sample_uri?: string;
+  sample_data?: string;
+  consent_confirmed: boolean;
+  description?: string;
+}) => api("/v1/voice-profiles", { method: "POST", body: JSON.stringify(body) });
+
+// Assign a voice to the agent: either a cloned profile or a preset voice id.
+export const assignAgentVoice = (
+  agentId: string,
+  which: { voice_profile_id: string } | { voice_id: string },
+) =>
+  api(`/v1/agents/${encodeURIComponent(agentId)}/voice`, {
+    method: "POST",
+    body: JSON.stringify(which),
+  });
+
+export const reviewLead = (
+  leadId: string,
+  body: { verdict: string; reviewer?: string; reason?: string },
+) =>
+  api(`/v1/leads/${encodeURIComponent(leadId)}/review`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const createReferralPartner = (body: {
+  name: string;
+  practice_areas?: string[];
+  states?: string[];
+  contact_email?: string;
+  contact_phone?: string;
+  notes?: string;
+}) => api("/v1/referral-partners", { method: "POST", body: JSON.stringify(body) });
+
+export const sendReferral = (referralId: string, clientConsent: boolean) =>
+  api(`/v1/referrals/${encodeURIComponent(referralId)}/send`, {
+    method: "POST",
+    body: JSON.stringify({ client_consent: clientConsent }),
+  });
+
+export const setReferralStatus = (referralId: string, status: string) =>
+  api(`/v1/referrals/${encodeURIComponent(referralId)}/status`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
+  });
+
+export const enrollTracker = (body: {
+  name: string;
+  phone: string;
+  matter_description?: string;
+  cadence_days?: number;
+}) => api("/v1/tracker/enroll", { method: "POST", body: JSON.stringify(body) });
+
+// Apply the engine's proposed qualification rules to the live intake agent.
+// The backend recomputes proposed rules server-side, so no payload is needed.
+export const applyTuning = (days = 90) =>
+  api(`/v1/tuning/apply?days=${days}`, { method: "POST" }) as Promise<{
+    status: string;
+    agent_id: string;
+    applied_rules: Record<string, unknown>;
+  }>;
+
+// Manual disposition override on a call.
+export const setCallOutcome = (callId: string, outcome: string, note?: string) =>
+  api(`/v1/calls/${encodeURIComponent(callId)}/outcome`, {
+    method: "POST",
+    body: JSON.stringify({ outcome, note }),
+  });
+
+// Staff-authored follow-up on an open thread (the manual chaser override).
+export const sendThreadMessage = (threadId: string, body: string) =>
+  api(`/v1/threads/${encodeURIComponent(threadId)}/message`, {
+    method: "POST",
+    body: JSON.stringify({ body }),
+  });
+
+// --- Messaging / events (firm-scoped reads) ---
+
+export type Message = {
+  id: string;
+  channel: string;
+  direction: string;
+  address: string;
+  body: string;
+  created_at: string;
+};
+export const listMessages = () => api("/v1/messages") as Promise<Message[]>;
+export const listEvents = () => api("/v1/events");
+
+// --- Admin ops (admin-token scoped) ---
+
+export const getOpsOverview = () => adminApi("/v1/admin/ops/overview");
+export const getOpsAlerts = () => adminApi("/v1/admin/ops/alerts");
+export const getOnboarding = () => adminApi("/v1/admin/ops/onboarding");
+export const getDeadEvents = () => adminApi("/v1/admin/events/dead");
+export const replayEvent = (eventId: string) =>
+  adminApi(`/v1/admin/events/${encodeURIComponent(eventId)}/replay`, { method: "POST" });

@@ -1,4 +1,4 @@
-import { Radio, ListTree } from "lucide-react";
+import { Radio, ListTree, CalendarCheck } from "lucide-react";
 import { getCall } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
 import TileRow from "@/components/TileRow";
@@ -11,6 +11,7 @@ import EmptyState from "@/components/EmptyState";
 import SoftButton from "@/components/SoftButton";
 import DataTable, { type Column } from "@/components/DataTable";
 import TranscriptTurn, { TranscriptList } from "@/components/TranscriptTurn";
+import CallDisposition from "@/components/CallDisposition";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,14 @@ export default async function CallDetail({ params }: { params: Promise<{ id: str
         actions={
           <>
             {call.outcome ? <Pill tone="info">{call.outcome}</Pill> : null}
+            {call.booked ? (
+              <Pill tone="ok" dot>
+                <CalendarCheck size={13} aria-hidden />{" "}
+                {call.consult_slot_at
+                  ? `Consult ${String(call.consult_slot_at).slice(0, 16).replace("T", " ")}`
+                  : "Consult booked"}
+              </Pill>
+            ) : null}
             {call.recording_uri ? (
               <a href={call.recording_uri}>
                 <SoftButton size="sm">
@@ -103,6 +112,10 @@ export default async function CallDetail({ params }: { params: Promise<{ id: str
           {call.summary}
         </Notice>
       ) : null}
+
+      <Card title="Disposition" className="stackCard">
+        <CallDisposition callId={call.id} current={call.outcome ?? null} />
+      </Card>
 
       <Card title="Transcript" className="stackCard">
         {transcript.length === 0 ? (
