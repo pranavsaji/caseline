@@ -19,6 +19,30 @@ LEAD_PHONE = "+15125550111"
 ADMIN_HEADERS = {"X-Admin-Token": "test-admin-token"}
 
 
+@pytest.fixture(autouse=True)
+def daytime_policy_clock(monkeypatch):
+    """TCPA quiet hours are wall-clock: run after 9pm recipient-local and the
+    chaser (correctly) defers instead of sending, failing these e2e tests.
+    Pin the policy clock to 18:00 UTC (daytime in every US zone) so the suite
+    passes at any hour; deferral behavior itself is covered with explicit
+    `now` values in test_outbound_compliance.py."""
+    import api.compliance.outbound as outbound
+    import api.orchestration.threads as threads
+
+    real_datetime = outbound.datetime
+    fixed = real_datetime(2026, 7, 16, 18, 0, tzinfo=timezone.utc)
+
+    class DaytimeDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(outbound, "datetime", DaytimeDatetime)
+    # The thread engine re-checks quiet hours at send time through its own
+    # clock seam — pin that too.
+    monkeypatch.setattr(threads, "_utcnow", lambda: fixed)
+
+
 @pytest.fixture
 def cms(firm, platform):
     return MockProvider()

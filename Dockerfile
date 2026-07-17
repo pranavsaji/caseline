@@ -15,5 +15,9 @@ RUN uv sync --frozen --no-dev
 COPY . .
 
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
+
+# Voice models (Silero VAD + turn detector) baked in so the agent service
+# never downloads at boot; harmless dead weight for the API service.
+RUN python -m agent.agent download-files
 EXPOSE 8000
 CMD ["bash", "deploy/railway/start.sh"]

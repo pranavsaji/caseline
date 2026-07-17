@@ -391,5 +391,32 @@ async def entrypoint(ctx: JobContext) -> None:
     await session.generate_reply(instructions=greeting)
 
 
+def _start_platform_health_server() -> None:
+    """Hosted platforms (Railway) healthcheck the service's $PORT. The
+    LiveKit worker's own health server stays on its default port (8081),
+    so when $PORT is set we answer 200 there from a zero-dependency daemon
+    thread — it can never interfere with the voice pipeline."""
+    port = os.getenv("PORT")
+    if not port:
+        return
+    import http.server
+    import threading
+
+    class _Health(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 — http.server API
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status": "ok", "service": "agent"}')
+
+        def log_message(self, *args: object) -> None:  # keep logs clean
+            pass
+
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", int(port)), _Health)
+    threading.Thread(target=server.serve_forever, daemon=True, name="health").start()
+    logger.info("platform health server listening on :%s", port)
+
+
 if __name__ == "__main__":
+    _start_platform_health_server()
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))

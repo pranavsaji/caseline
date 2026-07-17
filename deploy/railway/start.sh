@@ -9,6 +9,13 @@
 # `python -m workers.cms_sync` as the start command.
 set -euo pipefail
 
+# One image, two services: CASELINE_SERVICE=agent runs the LiveKit voice
+# worker (its /health rides the daemon thread in agent.py on $PORT);
+# anything else runs the API + cms_sync worker below.
+if [ "${CASELINE_SERVICE:-api}" = "agent" ]; then
+  exec python -m agent.agent start
+fi
+
 uvicorn api.main:app --host 0.0.0.0 --port "${PORT:-8000}" &
 API_PID=$!
 python -m workers.cms_sync &
