@@ -22,6 +22,8 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -74,10 +76,35 @@ DEFAULT_GREETING = (
 )
 
 
+def _current_time_line(timezone: str | None) -> str:
+    """A system-prompt line anchoring the model to the real current date/time
+    in the firm's timezone, so relative dates ("today", "a few hours ago")
+    resolve to a correct ISO date instead of a hallucinated year."""
+    try:
+        tz = ZoneInfo(timezone) if timezone else ZoneInfo("America/Chicago")
+    except Exception:  # unknown tz string — fall back rather than crash the call
+        tz = ZoneInfo("America/Chicago")
+    now = datetime.now(tz)
+    stamp = now.strftime("%A, %B %d, %Y, %I:%M %p").replace(" 0", " ")
+    return (
+        f"CURRENT DATE AND TIME: it is {stamp} ({now.tzname()}). "
+        "Use this as the source of truth for the current date. When the caller "
+        'refers to a time relative to now ("today", "yesterday", "a few hours '
+        'ago", "last week", "a couple months back"), compute the absolute date '
+        "from it and pass ISO format (YYYY-MM-DD) to tools. Never guess the year."
+    )
+
+
 class IntakeAgent(Agent):
     def __init__(self, backend: BackendClient, call_id: str, config: dict | None):
         config = config or {}
         instructions = config.get("instructions") or DEFAULT_INSTRUCTIONS
+        # The model has no inherent sense of "now" and will otherwise guess the
+        # year (it once stamped a same-day accident as 2024, which tripped the
+        # statute-of-limitations gate and wrongly declined the lead). Anchor it
+        # to the real current date in the firm's timezone so it can resolve
+        # "today" / "a few hours ago" / "last week" into a correct ISO date.
+        instructions = f"{instructions}\n\n{_current_time_line(config.get('timezone'))}"
         super().__init__(instructions=instructions)
         self._backend = backend
         self._call_id = call_id
