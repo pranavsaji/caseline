@@ -79,6 +79,30 @@ DEFAULT_GREETING = (
 )
 
 
+STYLE_INSTRUCTION = (
+    "CONVERSATION STYLE: sound like a warm, competent human receptionist, not a "
+    "form. Speak in short, natural spoken sentences. Ask ONE thing at a time and "
+    "wait for the answer — never stack multiple questions in one breath. Do not "
+    "re-confirm or re-ask something the caller already told you; acknowledge it "
+    "and move on. Mirror a detail back only once, briefly, if you truly need to "
+    "verify it. React like a person would ('Oof, that sounds painful') before "
+    "getting to the next question. Never read internal fields, tool names, JSON, "
+    "IDs, or system details aloud. Keep the call moving toward: understand the "
+    "injury, qualify, and (if a fit) book a real consultation."
+)
+
+SCHEDULING_INSTRUCTION = (
+    "SCHEDULING: you do NOT know the firm's calendar from memory. When a qualified "
+    "caller wants to book, FIRST call get_available_slots, then offer two or three "
+    "of those real times in natural language (e.g. 'I have Monday the 20th at 10 "
+    "or 2, or Tuesday at 11'). Only book a time the tool returned. If the caller "
+    "asks for a time that isn't open, say it's taken and offer the nearest real "
+    "options. You need the caller's name and phone number before booking. After a "
+    "successful booking you may offer an SMS confirmation — but only claim the "
+    "text was sent if send_sms reports success; if it didn't go through, say so "
+    "and offer to read the details instead."
+)
+
 CLOSING_INSTRUCTION = (
     "ENDING THE CALL: when the caller confirms they have nothing more, wrap up "
     "in this order — make sure you've called write_to_cms, give a short warm "
@@ -123,6 +147,8 @@ class IntakeAgent(Agent):
         # to the real current date in the firm's timezone so it can resolve
         # "today" / "a few hours ago" / "last week" into a correct ISO date.
         instructions = f"{instructions}\n\n{_current_time_line(config.get('timezone'))}"
+        instructions = f"{instructions}\n\n{STYLE_INSTRUCTION}"
+        instructions = f"{instructions}\n\n{SCHEDULING_INSTRUCTION}"
         instructions = f"{instructions}\n\n{CLOSING_INSTRUCTION}"
         super().__init__(instructions=instructions)
         self._backend = backend
@@ -262,19 +288,51 @@ class IntakeAgent(Agent):
         return result["decision"]
 
     @function_tool
+    async def get_available_slots(self) -> str:
+        """Get the firm's real open consultation times. Call this BEFORE offering
+        the caller any appointment — offer only these slots, and if the time they
+        want isn't listed, offer the nearest available ones instead. Never invent
+        a time."""
+        if not self._backend.v1:
+            return "scheduling is unavailable right now; take a message with a good callback time instead"
+        result = await self._backend.get_available_slots()
+        slots = result.get("slots", [])
+        logger.info("get_available_slots -> %d slots", len(slots))
+        if not slots:
+            return "no open consultation slots in the next two weeks; offer to take a message so the office can call back"
+        labels = [s["label"] for s in slots]
+        # Give the model both the spoken labels and the exact ISO to book with.
+        pairs = "; ".join(f"{s['label']} ({s['slot_iso']})" for s in slots)
+        return (
+            "Available consultation times — offer 2 or 3 of these in natural language and, "
+            "once the caller picks one, call schedule_consult with its exact slot_iso: " + pairs
+        )
+
+    @function_tool
     async def schedule_consult(self, name: str, phone: str, slot_iso: str) -> str:
-        """Book a consultation for a qualified lead.
+        """Book a consultation for a qualified lead. Only book a slot returned by
+        get_available_slots.
 
         Args:
             name: Caller's full name.
             phone: Caller's phone number.
-            slot_iso: Chosen consultation slot as an ISO 8601 datetime.
+            slot_iso: Chosen consultation slot as an ISO 8601 datetime — must be
+                one of the slot_iso values from get_available_slots.
         """
         result = await self._backend.schedule_consult(
             name, phone, slot_iso, call_id=self._call_id
         )
         logger.info("schedule_consult -> %s", result)
-        return result["status"]
+        if result.get("status") == "unavailable":
+            alts = result.get("alternatives") or []
+            if alts:
+                opts = "; ".join(f"{a['label']} ({a['slot_iso']})" for a in alts[:3])
+                return (
+                    "That time isn't available. Apologize briefly and offer these instead, "
+                    "then call schedule_consult again with the chosen slot_iso: " + opts
+                )
+            return "That time isn't available and nothing else is open soon; offer to take a message."
+        return "booked"
 
     @function_tool
     async def transfer_to_human(self, reason: str) -> str:
@@ -306,7 +364,14 @@ class IntakeAgent(Agent):
             return "sms unavailable"
         result = await self._backend.send_sms(self._call_id, to, body)
         logger.info("send_sms -> %s", result)
-        return result["status"]
+        if result.get("status") != "sent":
+            # Don't claim it sent. Tell the caller the text didn't go through and
+            # offer the info another way (read the address, or they can call in).
+            return (
+                "the text could not be sent to that number; let the caller know and offer "
+                "to read them the details or have the office follow up"
+            )
+        return "sent"
 
     @function_tool
     async def take_message(self, caller_name: str, phone: str, message: str) -> str:

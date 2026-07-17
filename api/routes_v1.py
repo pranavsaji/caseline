@@ -221,6 +221,13 @@ def tool_qualify_lead(
     )
 
 
+@router.get("/tools/available_slots")
+def tool_available_slots(
+    request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)
+) -> dict:
+    return tools.available_slots(_tool_ctx(request, firm))
+
+
 @router.post("/tools/schedule_consult")
 def tool_schedule_consult(
     req: ToolScheduleRequest, request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)

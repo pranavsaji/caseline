@@ -153,20 +153,31 @@ def test_active_label_follows_availability(monkeypatch):
     assert stack.active_label() == "anthropic:claude-haiku-4-5"
 
 
-def test_groq_primary_deepseek_failover_is_the_default_llm(monkeypatch):
-    # 2026-07-16: default is groq (measured median TTFT 376 ms on the voice
-    # SLO — deepseek's 748 ms failed it) with deepseek failover; both ride
-    # the OpenAI-compatible plugin (GROQ_API_KEY / DEEPSEEK_API_KEY).
-    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+def test_claude_primary_deepseek_failover_is_the_default_llm(monkeypatch):
+    # 2026-07-17: default is Claude Haiku 4.5 (most natural fast model +
+    # reliable native tool-calling) with deepseek failover. groq was dropped
+    # from the default — it emitted tool calls as text that leaked and often
+    # didn't execute.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.delenv("CASELINE_LLM_PROVIDERS", raising=False)
     assert providers.parse_specs("llm", None) == [
-        ("groq", "llama-3.3-70b-versatile"),
+        ("anthropic", "claude-haiku-4-5"),
         ("deepseek", "deepseek-chat"),
     ]
     stack = providers.build_llm()
     assert isinstance(stack.adapter, lk_llm.FallbackAdapter)
-    assert stack.active_label() == "groq:llama-3.3-70b-versatile"
+    assert stack.active_label() == "anthropic:claude-haiku-4-5"
+
+
+def test_missing_key_provider_is_skipped(monkeypatch):
+    # A default primary whose key isn't set degrades to the next provider
+    # instead of crashing the worker on every call.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("CASELINE_LLM_PROVIDERS", raising=False)
+    stack = providers.build_llm()
+    assert stack.active_label() == "deepseek:deepseek-chat"
 
 
 def test_deepseek_stacks_with_anthropic_failover(monkeypatch):

@@ -1,5 +1,52 @@
 """Typed tool layer over the v1 API: deterministic, firm-scoped, evented."""
 
+from api.messaging import normalize_phone
+
+
+def test_normalize_phone():
+    assert normalize_phone("124830370") is None  # STT-dropped digit -> refused
+    assert normalize_phone("3125551212") == "+13125551212"  # bare US 10-digit
+    assert normalize_phone("1 312 555 1212") == "+13125551212"
+    assert normalize_phone("+1 (312) 555-1212") == "+13125551212"
+    assert normalize_phone("") is None
+    assert normalize_phone("12") is None
+
+
+def test_available_slots_returns_open_business_hours(v1_client, firm):
+    r = v1_client.get("/v1/tools/available_slots", headers=firm["headers"])
+    assert r.status_code == 200
+    slots = r.json()["slots"]
+    assert slots, "expected at least one open slot"
+    assert all("slot_iso" in s and "label" in s for s in slots)
+
+
+def test_schedule_consult_rejects_taken_slot_with_alternatives(v1_client, firm):
+    slot = v1_client.get("/v1/tools/available_slots", headers=firm["headers"]).json()["slots"][0]
+    ok = v1_client.post(
+        "/v1/tools/schedule_consult",
+        json={"call_id": "c1", "name": "A", "phone": "+13125551212", "slot_iso": slot["slot_iso"]},
+        headers=firm["headers"],
+    )
+    assert ok.json()["status"] == "booked"
+    # Someone else asks for the same time -> unavailable, with real alternatives.
+    clash = v1_client.post(
+        "/v1/tools/schedule_consult",
+        json={"call_id": "c2", "name": "B", "phone": "+13125551213", "slot_iso": slot["slot_iso"]},
+        headers=firm["headers"],
+    )
+    body = clash.json()
+    assert body["status"] == "unavailable" and body["alternatives"]
+
+
+def test_send_sms_invalid_number_is_graceful(v1_client, firm):
+    r = v1_client.post(
+        "/v1/tools/send_sms",
+        json={"call_id": "c", "to": "124830370", "body": "hi"},
+        headers=firm["headers"],
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "failed" and r.json()["reason"] == "invalid_number"
+
 
 def _qualify(v1_client, firm, call_id="call-1", incident="2026-06-01"):
     return v1_client.post(
@@ -84,12 +131,17 @@ def test_schedule_consult_is_idempotent_under_forced_retry(v1_client, firm):
 
 
 def test_schedule_consult_rejects_bad_slot(v1_client, firm):
+    # An unparseable slot is a graceful "unavailable" (with alternatives to
+    # offer), not an HTTP error that would crash the agent's tool call.
     r = v1_client.post(
         "/v1/tools/schedule_consult",
         json={"call_id": "c", "name": "X", "phone": "1", "slot_iso": "tomorrow-ish"},
         headers=firm["headers"],
     )
-    assert r.status_code == 422
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "unavailable"
+    assert body["reason"] == "bad_slot"
 
 
 def test_transfer_to_human_returns_target_and_audits(v1_client, firm):

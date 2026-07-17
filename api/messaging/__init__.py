@@ -12,11 +12,33 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 
 import httpx
 
 logger = logging.getLogger("caseline.messaging")
+
+
+def normalize_phone(raw: str | None) -> str | None:
+    """Best-effort E.164 normalization (US-default). Returns None when the input
+    can't be a valid number — callers must handle that rather than hand a
+    malformed 'To' to Twilio (which 422s and, unguarded, surfaces as a 500).
+
+    Speech-to-text often drops or mangles digits ("124830370"), so validating
+    here keeps a bad transcription from crashing the send."""
+    if not raw:
+        return None
+    raw = raw.strip()
+    if raw.startswith("+"):
+        digits = re.sub(r"\D", "", raw)
+        return f"+{digits}" if 11 <= len(digits) <= 15 else None
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 10:  # bare US number
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    return None
 
 
 class SMSProvider(ABC):

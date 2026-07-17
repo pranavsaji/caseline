@@ -63,15 +63,14 @@ def _cartesia_http_session():
 
 DEFAULTS = {
     "stt": "deepgram:nova-3",
-    # 2026-07-17: voice LLM default is deepseek, with groq as failover. groq's
-    # llama-3.3-70b had lower TTFT but frequently emitted tool calls as literal
-    # text ("<function=qualify_lead>{...}</function>") instead of using the
-    # native tool-calling channel — the machinery leaked to callers AND the
-    # tools often didn't actually run. deepseek tool-calls reliably. groq stays
-    # as a talking-degraded fallback, guarded by FunctionCallStripper so its
-    # stray tool-text can never reach a caller. Keys via
-    # DEEPSEEK_API_KEY / GROQ_API_KEY; anthropic stays one env entry away.
-    "llm": "deepseek:deepseek-chat,groq:llama-3.3-70b-versatile",
+    # 2026-07-17: voice LLM default is Claude Haiku 4.5 — the most natural
+    # conversationalist of the fast models and a reliable native tool-caller —
+    # with deepseek as failover (also solid at tools). groq's llama-3.3-70b was
+    # dropped from the default: it frequently emitted tool calls as literal text
+    # ("<function=...>") that leaked to callers and often didn't execute.
+    # FunctionCallStripper still guards every model against that leak. Keys via
+    # ANTHROPIC_API_KEY / DEEPSEEK_API_KEY.
+    "llm": "anthropic:claude-haiku-4-5,deepseek:deepseek-chat",
     "tts": "cartesia:sonic-3",
 }
 
@@ -280,12 +279,32 @@ def build_stt(raw: str | None = None) -> ProviderStack:
     )
 
 
+# The env var each LLM provider needs; a spec whose key is absent is skipped so
+# a not-yet-configured primary (e.g. anthropic before the key is added) degrades
+# to the next provider instead of crashing the worker on every call.
+_LLM_KEY_ENV = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "groq": "GROQ_API_KEY",
+}
+
+
 def build_llm(raw: str | None = None) -> ProviderStack:
     specs = parse_specs("llm", raw)
+    usable = []
+    for p, m in specs:
+        key_env = _LLM_KEY_ENV.get(p)
+        if key_env and not os.getenv(key_env):
+            logger.warning("llm provider %s skipped: %s not set", p, key_env)
+            continue
+        usable.append((p, m))
+    if not usable:  # nothing configured — keep the original list so the error is loud
+        usable = specs
     return _stack(
         "llm",
-        [_build_llm(p, m) for p, m in specs],
-        [f"{p}:{m}" for p, m in specs],
+        [_build_llm(p, m) for p, m in usable],
+        [f"{p}:{m}" for p, m in usable],
     )
 
 

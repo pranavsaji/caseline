@@ -101,6 +101,14 @@ class BackendClient:
             },
         )
 
+    async def get_available_slots(self) -> dict:
+        """Real open consultation slots (v1 only)."""
+        if not self.v1:
+            return {"slots": []}
+        r = await self._client.get("/v1/tools/available_slots")
+        r.raise_for_status()
+        return r.json()
+
     async def schedule_consult(
         self, name: str, phone: str, slot_iso: str, call_id: str | None = None
     ) -> dict:
