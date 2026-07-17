@@ -19,6 +19,7 @@ Run (backend must be up on CASELINE_BACKEND_URL):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 
@@ -245,17 +246,26 @@ class IntakeAgent(Agent):
         return result["status"]
 
     @function_tool
-    async def write_to_cms(self, summary: str, structured: dict) -> str:
+    async def write_to_cms(self, summary: str, structured: str) -> str:
         """Write the intake record to the firm's case management system. Call this
         once before the call ends.
 
         Args:
             summary: Two-to-three sentence summary of the call and its outcome.
-            structured: The structured facts collected (incident_date, injury_type,
-                in_treatment, has_insurance, caller name/phone, decision, and
-                consult slot if booked).
+            structured: A JSON object (as a string) of the structured facts
+                collected — incident_date, injury_type, in_treatment,
+                has_insurance, caller name/phone, decision, and consult slot if
+                booked. Passed as a JSON string because a free-form object
+                parameter produces a tool schema that strict function-calling
+                providers (e.g. Groq) reject.
         """
-        result = await self._backend.write_to_cms(self._call_id, summary, structured)
+        try:
+            facts = json.loads(structured) if isinstance(structured, str) else structured
+        except (json.JSONDecodeError, TypeError):
+            # Model handed us something that isn't valid JSON — keep it rather
+            # than dropping the record; the CMS layer stores it as-is.
+            facts = {"raw": structured}
+        result = await self._backend.write_to_cms(self._call_id, summary, facts)
         logger.info("write_to_cms -> %s", result)
         return result["status"]
 
