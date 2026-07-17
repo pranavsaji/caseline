@@ -21,6 +21,13 @@ Keys landed in `.env` and the full stack was brought up and verified live on thi
 - **⚠️ New measured finding — DeepSeek TTFT vs the SLO (risk #2 verification the switch commit asked for):** warm median TTFT **748 ms** over 5 trials (min 671, max 2530 cold). The LLM stage alone eats ~93% of the 800 ms **total-turn** ceiling that must also fit STT endpointing (~0.4 s min-endpointing) and TTS TTFB — realistic turns land ~1.3–1.6 s, so **deepseek-chat as primary cannot meet the voice SLO** (its API has no US region). It is fine for the async channels (SMS/email threads have no turn budget). Decision needed: keep DeepSeek on cost and accept slower voice turns, or put an SLO-compliant model first for voice (`CASELINE_LLM_PROVIDERS=anthropic:claude-haiku-4-5,deepseek:deepseek-chat` — needs an Anthropic key) and keep DeepSeek as failover/async.
 - Still human-in-the-loop: Twilio number → LiveKit SIP inbound trunk (do after the LLM key, or the number answers and stalls), a real-recipient SMS test, mic `console` smoke, and the ≥20-call latency exit measurements.
 
+### ☁️ Cloud deployment — 2026-07-16
+
+- **Backend on Railway** (project `caseline`): one service (`backend`) running the API + cms_sync worker from the repo Dockerfile (`deploy/railway/start.sh`), plus managed Postgres. Public URL: `https://backend-production-a477f.up.railway.app`. All 4 migrations applied on boot; RLS app role authenticates via `CASELINE_APP_DB_PASSWORD` (the managed-Postgres auth path added for this). Production smoke over the public URL: qualify → idempotent booking (duplicate flagged) → `call.completed`/`consult.booked`/`lead.qualified` all processed by the worker. Fresh production secrets generated at deploy (admin token retrievable via `railway variables --service backend`); Twilio/provider keys deliberately **not** uploaded — SMS uses the logging provider until the firm opts into real sends.
+- **Dashboard on Vercel**: `https://caseline-three.vercel.app` → Railway backend (`CASELINE_API_URL` + production firm token in Vercel env). All 7 pages 200 and rendering live production data.
+- **Runs locally by design**: the voice agent worker (latency-sensitive, connects out to LiveKit Cloud) and the dev stack (`scripts/dev_db.sh` + uvicorn + worker + `next start`).
+- Production firm: "Saji & Partners Injury Law" (`b8ef1a36…`), onboarded via the admin API.
+
 Execution plan for the architecture defined in `caseline-voice-intake-architecture.md`. Written from the principal-architect seat: each phase has a single risk it exists to retire, hard exit criteria, and an explicit "not in this phase" list. Phases are gates, not calendar promises — you do not start Phase N+1 until Phase N's exit criteria are demonstrably true.
 
 ---
