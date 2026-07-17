@@ -1,6 +1,8 @@
 # Caseline Dashboard — UI Redesign Plan (Neomorphism)
 
-> **Status:** Phase 0 ✅ complete · Phase 1 ✅ complete · Phase 2 ✅ complete · Phase 3 ✅ complete · Phase 4 ⬜ — _(last updated 2026-07-16)_
+> **Status:** Phase 0 ✅ complete · Phase 1 ✅ complete · Phase 2 ✅ complete · Phase 3 ✅ complete · Phase 4 ✅ **SHIPPED** — _(last updated 2026-07-16)_
+>
+> **Live:** [`https://caseline-three.vercel.app`](https://caseline-three.vercel.app) (Vercel prod, project `caseline`) → Railway backend `https://backend-production-a477f.up.railway.app`. All 9 routes 200; Lighthouse desktop **Perf 100 / A11y 100 / Best-practices 96**.
 
 > **Goal:** Turn the current flat, functional dashboard into a production-grade, friendly, and visually distinctive interface using a **neomorphic ("soft UI")** design language — without touching the Python backend or the `frontend/lib/api.ts` contract.
 >
@@ -343,10 +345,24 @@ Contrast audit (hard gate), keyboard walkthrough of every page, mobile breakpoin
 - Re-run `scratchpad/final-audit.mjs` (self-contained, `node`) if the palette is ever retuned — it's the regression guard for the AA gate.
 - Lighthouse target (≥95 a11y / ≥90 perf) not run in-session (no headless Chrome runner wired up); the a11y prerequisites are all satisfied (contrast AA, focus rings, labelled controls, semantic nav, reduced-motion) — run it against the Vercel preview URL during Phase 4.
 
-**Phase 4 — Ship**
+**Phase 4 — Ship — ✅ COMPLETE (2026-07-16)**
 `cd frontend && npm run build` locally → fix type errors → `vercel --prod` (or push to the linked project's production branch). Confirm `CASELINE_API_URL` + `CASELINE_FIRM_TOKEN` env vars are set in Vercel. Smoke-test all 9 routes against the Railway backend.
 
-**Total: ~4 working days.**
+1. ✅ **Pre-flight (local).** `npx tsc --noEmit` clean (exit 0); `npm run build` green — all 8 routes compiled, `/kit` stays dev-only, First Load JS ~103–110 KB. Confirmed both Vercel **production** env vars are set (`vercel env ls production`): `CASELINE_API_URL` → `https://backend-production-a477f.up.railway.app`, `CASELINE_FIRM_TOKEN` (encrypted). Railway backend confirmed live (`/health` 200, `/docs` 200).
+2. ✅ **Caught the real gap:** the live prod site (`caseline-three.vercel.app`) was still serving the **pre-redesign flat UI** — the Phase 0–3 work was committed to `main` but had **never been deployed** (Vercel project is **not** git-connected, so pushing `main` does not auto-deploy; it ships only via `vercel --prod`). Verified by fingerprinting the live bundle: old `class="nav"` present, **no** `data-theme` / theme-bootstrap / `next/font` vars / `--surface` / `--nm-raised` tokens.
+3. ✅ **Deployed to production** — `vercel --prod --yes` from `frontend/`, build completed on Vercel, aliased to `caseline-three.vercel.app`. Re-fingerprinted the fresh bundle: theme-bootstrap script present, `next/font` variable classes present, `<nav aria-label="Primary">` (AppShell sidebar) present, old flat `.nav` **gone**, and the full Phase 3 token set live in the 23 KB CSS (`--surface`, `--nm-raised`, `--accent-hover`, `--ok-ink`, `pulseNone`, `prefers-reduced-motion`, `:focus-visible`).
+4. ✅ **Lighthouse (the deferred Phase 3 gate), run against live prod.** First pass surfaced one real a11y defect — `heading-order`: `<Card>` titles were `<h3>` sitting directly under the page `<h1>`, skipping `<h2>`. **Fixed** `Card.tsx` `h3 → h2` (section titles are the correct level under the page title; `.cardTitle` styles by class so visuals are unchanged), rebuilt, redeployed. **Final desktop scores: Performance 100 · Accessibility 100 · Best-practices 96**, `heading-order` PASS, CLS 0, LCP 0.5 s, server-response 30 ms. (Mobile perf 72 is purely React-19 hydration TBT under Lighthouse's default 4× CPU throttle — desktop TBT is 0 ms; this is a desktop-first partner dashboard, and the hard a11y AA gate is met at 100.)
+5. ✅ **Full-route smoke test against the Railway backend (live prod):** all 9 routes **200** — `/`, `/threads`, `/analytics`, `/tuning`, `/referrals`, `/studio`, `/config`, dynamic `/calls/[id]` (`prod-smoke-1` renders transcript + "Answer speed" + per-turn latency), `/threads/[id]` (same dynamic mechanism); `/kit` **404** (prod gate holds). No `application error` / server-error markup anywhere; real backend data renders (analytics funnel, threads "Speed to lead" PulseTile + "No threads" empty state).
+
+**Files touched:** `frontend/components/Card.tsx` (`h3 → h2`, heading-order a11y fix). No page data layer, `lib/api.ts`, or route handlers changed.
+
+**Notes / learnings:**
+- **Vercel is not git-connected for this project** — production ships only via `vercel --prod` from `frontend/`. A `git push` to `main` alone will **not** update the live site. (There were no GitHub deployment records or commit statuses, which is how this was caught.)
+- The local dev firm token (`.env.local` / root `.env`) is **rejected by the Railway backend** (`Invalid or revoked token`) — Railway has its own DB with a distinct firm token, which is the one stored (encrypted) in Vercel prod env. Don't smoke-test prod behavior with the local token; validate against the deployed URL instead.
+- Lighthouse mobile score is TBT/hydration-bound, not TTFB-bound (server-response 30–40 ms). If a mobile-perf number is ever needed ≥ 90, the lever is reducing client JS / hydration cost, not the backend.
+- Regression guard for the a11y AA gate remains `scratchpad/final-audit.mjs` (Phase 3); re-run Lighthouse desktop against the prod URL after any UI change (`npx lighthouse <url> --preset=desktop`).
+
+**Total: ~4 working days — all phases complete and shipped.**
 
 ---
 

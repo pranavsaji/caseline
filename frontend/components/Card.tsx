@@ -21,7 +21,7 @@ export default function Card({
     <section className={className ? `${styles.card} ${className}` : styles.card}>
       {(title || actions) && (
         <header className={styles.cardHeader}>
-          {title ? <h3 className={styles.cardTitle}>{title}</h3> : <span />}
+          {title ? <h2 className={styles.cardTitle}>{title}</h2> : <span />}
           {actions ? <div className={styles.cardActions}>{actions}</div> : null}
         </header>
       )}
