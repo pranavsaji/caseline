@@ -19,16 +19,28 @@
   --text: #26303e;
   --muted: #5c6879;
 
-  /* Accent */
-  --accent: #3b6ef5;
+  /* Accent (darkened from #3b6ef5 so on-accent white text clears AA 4.5:1
+     on the primary button — the Phase 3 contrast gate). */
+  --accent: #3363e6;
   --accent-deep: #2551c6;
+  --accent-hover: #2551c6;
   --on-accent: #ffffff;
 
-  /* Semantic status (solid fills — never neomorphic) */
+  /* Semantic status FILLS (solid pill/notice/glow surfaces — never text). */
   --ok: #1f9d6b;
   --warn: #c9871f;
   --bad: #d0453f;
   --info: #3b6ef5;
+
+  /* Semantic INK — the same hues darkened to clear AA 4.5:1 as *foreground
+     text* on soft surfaces and on their own tinted pill backgrounds. Pills,
+     PulseTile values, error text and danger buttons use these, never the
+     fills above. (Verified: scratchpad/final-audit.mjs — all ≥4.5.) */
+  --ok-ink: #156b49;
+  --warn-ink: #815614;
+  --bad-ink: #a23631;
+  --info-ink: #2d54ba;
+  --muted-ink: #535e6d;
 
   /* Backward-compat aliases for pre-redesign pages */
   --bg: var(--surface);
@@ -72,12 +84,21 @@
 
   --accent: #5b8def;
   --accent-deep: #3f6bd0;
+  --accent-hover: #7aa4f4;
   --on-accent: #0f1320;
 
   --ok: #3fb27f;
   --warn: #e0a03d;
   --bad: #e05d5d;
   --info: #5b8def;
+
+  /* Semantic ink — on dark surfaces these lighten (rather than darken) to
+     clear AA 4.5:1 as foreground text. */
+  --ok-ink: #3fb27f;
+  --warn-ink: #e0a03d;
+  --bad-ink: #e57777;
+  --info-ink: #6f9bf1;
+  --muted-ink: #96a0b5;
 
   --border: #313846;
 
@@ -96,11 +117,17 @@
     --muted: #96a0b5;
     --accent: #5b8def;
     --accent-deep: #3f6bd0;
+    --accent-hover: #7aa4f4;
     --on-accent: #0f1320;
     --ok: #3fb27f;
     --warn: #e0a03d;
     --bad: #e05d5d;
     --info: #5b8def;
+    --ok-ink: #3fb27f;
+    --warn-ink: #e0a03d;
+    --bad-ink: #e57777;
+    --info-ink: #6f9bf1;
+    --muted-ink: #96a0b5;
     --border: #313846;
     color-scheme: dark;
   }

@@ -72,8 +72,8 @@ export default function PulseTile({
     health = pulseStatus(value, budget, { higherIsBetter, warnRatio });
   }
 
-  // No health signal → behave like a neutral raised readout.
-  const stateClass = health ? STATUS_CLASS[health] : styles.pulseOk;
+  // No health signal → neutral raised readout (never masquerade as healthy).
+  const stateClass = health ? STATUS_CLASS[health] : styles.pulseNone;
   const badgeTone = health === "bad" ? "bad" : health === "warn" ? "warn" : "ok";
 
   return (

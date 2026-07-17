@@ -48,6 +48,7 @@ export default function NavItem({
       href={href}
       className={`${styles.navItem} ${active ? styles.navItemActive : ""}`}
       aria-current={active ? "page" : undefined}
+      aria-label={label}
     >
       <Icon size={17} className={styles.navIcon} aria-hidden />
       <span className={styles.navLabel}>{label}</span>

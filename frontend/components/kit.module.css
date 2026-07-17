@@ -17,14 +17,16 @@
   font-weight: 600;
   line-height: 1.5;
   white-space: nowrap;
-  color: var(--muted);
+  color: var(--muted-ink);
   background: color-mix(in srgb, var(--muted) 14%, transparent);
 }
-.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); }
-.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 18%, transparent); }
-.pill.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 16%, transparent); }
-.pill.info { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
-.pill.muted { color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
+/* Text uses the darkened *ink* hues (AA 4.5:1 on the tint); the tint background
+   keeps the brighter *fill* hue so the pill still reads as its status color. */
+.pill.ok { color: var(--ok-ink); background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.pill.warn { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.pill.bad { color: var(--bad-ink); background: color-mix(in srgb, var(--bad) 16%, transparent); }
+.pill.info { color: var(--info-ink); background: color-mix(in srgb, var(--info) 16%, transparent); }
+.pill.muted { color: var(--muted-ink); background: color-mix(in srgb, var(--muted) 14%, transparent); }
 .pillDot {
   width: 6px;
   height: 6px;
@@ -89,8 +91,8 @@
   background: var(--accent);
   color: var(--on-accent);
 }
-.btnPrimary:hover { background: var(--accent-deep); }
-.btnDanger { color: var(--bad); }
+.btnPrimary:hover { background: var(--accent-hover); }
+.btnDanger { color: var(--bad-ink); }
 .btnSm { padding: 6px 12px; font-size: 12.5px; }
 .btnBlock { width: 100%; }
 
@@ -130,7 +132,7 @@
 /* Validation state: red inset ring without a hard border. */
 .controlInvalid { box-shadow: var(--nm-pressed), inset 0 0 0 1.5px var(--bad); }
 .hint { font-size: 12px; color: var(--muted); }
-.hintError { color: var(--bad); }
+.hintError { color: var(--bad-ink); }
 
 /* ---- Toggle (real checkbox role=switch, styled) ------------------------ */
 .toggle {
@@ -238,6 +240,11 @@
 .pulseBad {
   box-shadow: var(--nm-pressed);
 }
+/* No data / no SLO signal: neutral raised, no glow, no health color — so an
+   empty metric never masquerades as healthy green. */
+.pulseNone {
+  box-shadow: var(--nm-raised);
+}
 .pulseHead {
   display: flex;
   align-items: center;
@@ -252,9 +259,10 @@
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
-.pulseOk .pulseValue { color: var(--ok); }
-.pulseWarn .pulseValue { color: var(--warn); }
-.pulseBad .pulseValue { color: var(--bad); }
+.pulseOk .pulseValue { color: var(--ok-ink); }
+.pulseWarn .pulseValue { color: var(--warn-ink); }
+.pulseBad .pulseValue { color: var(--bad-ink); }
+.pulseNone .pulseValue { color: var(--text); }
 .pulseUnit { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 4px; }
 
 @keyframes pulseGlowOk {
@@ -370,14 +378,16 @@
   color: var(--text);
 }
 .noticeIcon { flex: none; margin-top: 1px; }
+/* Left border keeps the bright fill (decorative); the meaningful icon uses the
+   ink hue so it clears AA as a conveying graphic. */
 .noticeOk { border-left: 3px solid var(--ok); }
-.noticeOk .noticeIcon { color: var(--ok); }
+.noticeOk .noticeIcon { color: var(--ok-ink); }
 .noticeBad { border-left: 3px solid var(--bad); }
-.noticeBad .noticeIcon { color: var(--bad); }
+.noticeBad .noticeIcon { color: var(--bad-ink); }
 .noticeInfo { border-left: 3px solid var(--accent); }
-.noticeInfo .noticeIcon { color: var(--accent); }
+.noticeInfo .noticeIcon { color: var(--info-ink); }
 .noticeWarn { border-left: 3px solid var(--warn); }
-.noticeWarn .noticeIcon { color: var(--warn); }
+.noticeWarn .noticeIcon { color: var(--warn-ink); }
 .noticeTitle { font-weight: 600; margin: 0 0 2px; }
 .noticeBody { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .noticeBody :global(pre), .noticeMono {

@@ -1,6 +1,6 @@
 # Caseline Dashboard — UI Redesign Plan (Neomorphism)
 
-> **Status:** Phase 0 ✅ complete · Phase 1 ✅ complete · Phase 2 ✅ complete · Phase 3 ⬜ · Phase 4 ⬜ — _(last updated 2026-07-16)_
+> **Status:** Phase 0 ✅ complete · Phase 1 ✅ complete · Phase 2 ✅ complete · Phase 3 ✅ complete · Phase 4 ⬜ — _(last updated 2026-07-16)_
 
 > **Goal:** Turn the current flat, functional dashboard into a production-grade, friendly, and visually distinctive interface using a **neomorphic ("soft UI")** design language — without touching the Python backend or the `frontend/lib/api.ts` contract.
 >
@@ -317,8 +317,31 @@ Swap `layout.tsx` to `<AppShell>`; migrate pages in order of §9 (Overview → d
 - The `PulseTile` "no data" fallback renders the em-dash in the healthy-green color (status `null` → `pulseOk`). Cosmetically reads slightly "healthy" when there's genuinely no data — candidate for a neutral `pulseNone` state in the Phase 3 polish pass if it bothers a partner.
 - Remaining for **Phase 3**: contrast audit (hard AA gate), keyboard walkthrough, mobile breakpoints (sidebar → top bar already responsive at ≤860px — verify on device), reduced-motion, Lighthouse, and the §8 microcopy sweep (much of it already applied: "Publish changes", directive errors, inviting empty states).
 
-**Phase 3 — Polish & a11y gate (½ day)**
+**Phase 3 — Polish & a11y gate (½ day) — ✅ COMPLETE (2026-07-16)**
 Contrast audit (hard gate), keyboard walkthrough of every page, mobile breakpoints (sidebar → bottom tabs), reduced-motion check, Lighthouse (target ≥ 95 a11y / ≥ 90 perf). Microcopy pass (§8).
+
+1. ✅ **Contrast audit — the hard AA gate (§7).** Ran a computed WCAG-2.1 audit of every text/background pair in **both themes**, including the tricky cases: pill text sitting on its own `color-mix` tint, PulseTile stat values, error text, and the primary button's white-on-accent. **The audit failed 11 pairs** — the semantic colors were tuned as *solid pill fills* (white text on them) but were being reused as *foreground text* on soft surfaces, a different contrast requirement. Fixes:
+   - Introduced **semantic `--*-ink` tokens** (`--ok-ink`/`--warn-ink`/`--bad-ink`/`--info-ink`/`--muted-ink`) — the same hues **darkened in Slate Light / lightened in Graphite Dark** so they clear **AA 4.5:1** as foreground text on both the surface and their tinted pill backgrounds. The bright `--ok`/`--warn`/`--bad` *fills* stay for tint backgrounds, notice left-borders and glows (decoration); the **ink** hues drive all pill text, PulseTile values, error hints, danger-button text and notice icons.
+   - **Darkened `--accent`** in light (`#3b6ef5 → #3363e6`) so white text on the primary button clears 4.5:1 (was 4.44:1); added **`--accent-hover`** (light darkens, **dark lightens** to `#7aa4f4`) so the primary button's hover state passes 4.5:1 in dark too (was 3.72:1).
+   - **Re-ran the audit → all 40 pairs PASS with margin** (light: text 10.95:1, muted 4.64:1, all pills ≥ 4.5:1, pulse inks ≥ 5.2:1; dark: all ≥ 4.5:1). Audit scripts kept in `scratchpad/{contrast,solve,final-audit}.mjs` for re-runs.
+2. ✅ **Keyboard & screen-reader walkthrough.** Verified the global `:focus-visible` 2px accent ring renders on every focusable element (compiled CSS + live Tab test). Fixed a real gap: on mobile `<NavItem>` hides its text label (`display:none`) and the icon is `aria-hidden`, leaving nav links with **no accessible name** — added an always-present `aria-label={label}`. Confirmed the kit already ships correct semantics: real `<nav aria-label="Primary">` with `aria-current="page"`, `<Toggle>` = real `<input type=checkbox role=switch>` with focus ring, inputs use `useId()` + `htmlFor` + `aria-invalid`, `<ThemeToggle>` has `aria-label`/`aria-pressed`.
+3. ✅ **PulseTile "no data" neutral state.** Resolved the Phase 2 learning — a metric with no value used to render in healthy-green (`pulseOk`), reading as "healthy" when it's actually empty. Added a neutral **`pulseNone`** state (raised, no glow, `--text` value) and pointed the no-signal branch at it. Verified in served HTML on `/` (backend offline → tiles render neutral, not green).
+4. ✅ **Motion & mobile.** Confirmed `prefers-reduced-motion` freezes the PulseTile breathing glow + all transitions (global block + scoped `.pulseOk/.pulseWarn { animation:none }`); every state still reads via color + inset. Verified the responsive sidebar → horizontal top bar collapse at `≤860px`.
+5. ✅ **Microcopy (§8).** Confirmed the sweep applied in Phase 2 holds: "Publish changes" (outcome verbs), directive errors ("Not a valid E.164 number", "Invalid JSON — …"), inviting empty states, plain-language SLO labels ("Answer speed" + ms as data). Sentence case throughout.
+
+**Files touched:** `frontend/app/globals.css` (+`--accent-hover` & 5 `--*-ink` tokens per theme, darkened light `--accent`), `frontend/components/kit.module.css` (pills/pulse values/error text/danger button/notice icons → ink; `--accent-hover` hover; new `.pulseNone`), `frontend/components/PulseTile.tsx` (no-data → `pulseNone`), `frontend/components/NavItem.tsx` (`aria-label`), `frontend/app/kit/themeVars.ts` (gallery palette kept in sync). No page data layer, `lib/api.ts`, or route handlers changed.
+
+**Validation performed:**
+- Computed WCAG audit (`scratchpad/final-audit.mjs`) → **40/40 pairs PASS ≥ AA** in both themes (the hard gate).
+- `npx tsc --noEmit` → clean (exit 0). `npm run build` → all 8 routes compiled, `/kit` stays dev-only, First Load JS unchanged (~103–110 KB).
+- Global CSS **12.7 KB** (under the 15 KB budget); confirmed `--ok-ink`/`--accent-hover` present in the compiled bundle.
+- **Runtime smoke test** (`next start`): `/`, `/studio`, `/config`, `/analytics`, `/threads`, `/tuning`, `/referrals` all **HTTP 200**; `/kit` **404** (prod gate holds); no `application error` markup; `pulseNone` neutral state confirmed in `/` HTML.
+- **Visual check in Chrome, both themes (via `/kit` gallery, `next dev`):** Slate Light + Graphite Dark render as textbook neomorphism; PulseTiles express health through material with the **darker/lighter ink values legibly readable**, pills/validation errors/danger buttons high-contrast, inset input wells + accent toggle, transcript bubbles. **Console clean — no errors, no hydration warnings.**
+
+**Notes / learnings for Phase 4 (ship):**
+- The fill-vs-ink split is the reusable rule: any semantic hue used as **text or a meaningful icon** must use `--*-ink`; only decoration (tint fills, borders, glows) uses the bright `--ok`/`--warn`/`--bad`. Keep this when adding components.
+- Re-run `scratchpad/final-audit.mjs` (self-contained, `node`) if the palette is ever retuned — it's the regression guard for the AA gate.
+- Lighthouse target (≥95 a11y / ≥90 perf) not run in-session (no headless Chrome runner wired up); the a11y prerequisites are all satisfied (contrast AA, focus rings, labelled controls, semantic nav, reduced-motion) — run it against the Vercel preview URL during Phase 4.
 
 **Phase 4 — Ship**
 `cd frontend && npm run build` locally → fix type errors → `vercel --prod` (or push to the linked project's production branch). Confirm `CASELINE_API_URL` + `CASELINE_FIRM_TOKEN` env vars are set in Vercel. Smoke-test all 9 routes against the Railway backend.
