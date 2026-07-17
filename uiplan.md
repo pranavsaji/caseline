@@ -1,6 +1,6 @@
 # Caseline Dashboard — UI Redesign Plan (Neomorphism)
 
-> **Status:** Phase 0 ✅ complete · Phase 1 ⬜ · Phase 2 ⬜ · Phase 3 ⬜ · Phase 4 ⬜ — _(last updated 2026-07-16)_
+> **Status:** Phase 0 ✅ complete · Phase 1 ✅ complete · Phase 2 ⬜ · Phase 3 ⬜ · Phase 4 ⬜ — _(last updated 2026-07-16)_
 
 > **Goal:** Turn the current flat, functional dashboard into a production-grade, friendly, and visually distinctive interface using a **neomorphic ("soft UI")** design language — without touching the Python backend or the `frontend/lib/api.ts` contract.
 >
@@ -259,8 +259,32 @@ For each page: keep the data + `frontend/lib/api.ts` calls exactly; swap present
 - Existing pages now inherit soft styling for free via the restyled class vocabulary; Phase 2 replaces them with the real component kit.
 - Keep the single-shadow-depth rule (`--nm-dist`/`--nm-blur`) when building components — the material already looks right; don't escalate shadows.
 
-**Phase 1 — Component kit (1 day)**
+**Phase 1 — Component kit (1 day) — ✅ COMPLETE (2026-07-16)**
 Build `components/*` from §5, in dependency order: `Pill` → `Card` → `SoftButton`/inputs → `StatTile`/`PulseTile` → `DataTable` → `TranscriptTurn`/`Notice`/`EmptyState` → `AppShell`/`NavItem`/`PageHeader`. Storybook-style scratch page at `/kit` (dev-only) to eyeball every component in both themes.
+
+1. ✅ Shared scoped styles: `components/kit.module.css` (CSS Module) composes the Phase 0 tokens (`--surface`, `--nm-raised`, `--accent`, …) into every component. Kept `globals.css` as the pure token/foundation layer — no globals bloat, idiomatic Next.js. One shadow depth sitewide preserved; PulseTile breathing glow via scoped `@keyframes`, frozen under `prefers-reduced-motion`.
+2. ✅ Built all 15 components from §5:
+   - Primitives: `Pill` (solid, high-contrast, 5 tones + dot), `Card` + `Well` (the required inset buffer for nested raised controls), `SoftButton` (default/primary/danger, raised→lift→inset-press, forwards native props).
+   - Inputs (`components/inputs/*`): `SoftInput`, `SoftTextarea` (mono default), `SoftSelect` (custom chevron) — all inset wells with accent focus ring + red-inset `invalid` validation cue; `Toggle` (real `<input type=checkbox role=switch>`, focus ring, accent-fill thumb).
+   - Data/signature: `StatTile` (tabular number + label), **`PulseTile`** (SLO-aware — raised+glow healthy, amber breathing near-budget, **inset/recessed when breached**; `pulseStatus()` helper computes health from value vs budget, lower- or higher-is-better), `DataTable<T>` (generic columns, inset well, sticky header, zebra via surface shift, hover lift, horizontal scroll), `TranscriptTurn` + `TranscriptList` (agent raised+accent-left / caller inset, opposite alignment).
+   - Feedback/chrome: `Notice` (4 tones + lucide icon), `EmptyState` (soft icon medallion + copy + action), `PageHeader` (display title/subtitle/actions), `AppShell` (raised soft sidebar → mobile top bar, theme toggle pinned) + `NavItem` (client island, **inset when active** via `usePathname`, `aria-current`).
+3. ✅ Dev-only `/kit` gallery (`app/kit/page.tsx` + `Gallery.tsx` + `themeVars.ts`): renders the full kit **twice on one page — Slate Light and Graphite Dark side by side** — by inline-overriding the palette CSS vars per panel (custom-property substitution resolves `--nm-*` shadows against the in-scope palette). Gated with `notFound()` when `NODE_ENV === "production"` so it never ships as a route.
+
+**Files touched:** `frontend/components/kit.module.css` (new), `frontend/components/{Pill,Card,SoftButton,StatTile,PulseTile,DataTable,TranscriptTurn,Notice,EmptyState,PageHeader,Toggle,NavItem,AppShell}.tsx` (new), `frontend/components/inputs/{SoftInput,SoftTextarea,SoftSelect}.tsx` (new), `frontend/app/kit/{page,Gallery,themeVars}.tsx` (new). No existing pages, `lib/api.ts`, or route handlers changed — kit is additive.
+
+**Validation performed:**
+- `npx tsc --noEmit` → clean (exit 0).
+- `npm run build` → all 8 static routes generated including `/kit`; no lint/type errors; First Load JS unchanged for existing routes (kit code is isolated).
+- **Production gate verified:** `next start` on the prod build → `/kit` returns **404** (dev-only), while `/config` returns 200 — the `notFound()` gate works.
+- **Dev runtime:** `next dev` → `/kit` HTTP 200, served HTML contains both theme panels + every component, no runtime errors in the log.
+- **Visual check in Chrome (both themes on one page):** Slate Light + Graphite Dark both render as textbook neomorphism — PulseTiles express health through material (healthy = raised green, breached "Speed to lead" = **inset/recessed red**), inset input wells with red error text, accent-filled Toggle, agent-raised/caller-inset transcript bubbles, tone-colored Notices, soft EmptyState medallions, `Card → Well → SoftButton` nesting rule demonstrated. **Console clean on reload — no errors, no hydration warnings.**
+
+**Notes / learnings for later phases (Phase 2 shell + page migration):**
+- `AppShell`/`NavItem` are built and gallery-verified but **not yet wired into `layout.tsx`** — that swap is Phase 2 (replace the flat `.nav` with `<AppShell>`). The old class vocabulary in `globals.css` still styles the un-migrated pages until then.
+- Import components via the `@/components/*` path alias (e.g. `@/components/PulseTile`). Server pages can use every component except `NavItem`/`AppShell`/`ThemeToggle` (client islands) — but AppShell wraps them for you, so pages stay server-rendered.
+- `DataTable` is generic (`Column<T>`) and keeps existing column markup — Phase 2 page migrations map current `<table>` rows onto its `columns` array with `render`.
+- For latency/SLO cells use `PulseTile` (or `pulseStatus()` + `Pill`) so health reads from the material, not just color.
+- CSS Module (`kit.module.css`) is ~16KB source but scoped and tree-split per route by Next.js — the <15KB global budget from Phase 0 (`globals.css` = 13.3KB) is unaffected.
 
 **Phase 2 — Shell + pages (1.5 days)**
 Swap `layout.tsx` to `<AppShell>`; migrate pages in order of §9 (Overview → detail pages → Studio last). Keep each page's data layer identical.
