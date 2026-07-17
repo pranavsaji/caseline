@@ -79,6 +79,23 @@ DEFAULT_GREETING = (
 )
 
 
+def _greeting_text(config: dict | None) -> str:
+    """A fixed opening line spoken directly via TTS (no LLM call), so the caller
+    hears a greeting immediately. Includes the firm name, the AI disclosure, and
+    — when required by config or consent policy — the recording disclosure."""
+    config = config or {}
+    firm = config.get("firm_name") or "our office"
+    agent = config.get("agent_name") or "Caseline"
+    script = config.get("script") or {}
+    consent = config.get("consent") or {}
+    disclose = script.get("recording_disclosure", True) or consent.get("disclosure_required")
+    recording = " Just so you know, this call may be recorded for quality purposes." if disclose else ""
+    return (
+        f"Thanks for calling {firm}. This is {agent}, the AI intake assistant."
+        f"{recording} How can I help you today?"
+    )
+
+
 STYLE_INSTRUCTION = (
     "CONVERSATION STYLE: sound like a warm, competent human receptionist, not a "
     "form. Speak in short, natural spoken sentences. Ask ONE thing at a time and "
@@ -500,7 +517,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # Phase 4: voice_id may be a cloned per-firm voice (voice_profiles ->
     # agents.voice_id); the TTS stage doesn't care where the id came from.
     voice_id = (config or {}).get("voice_id") or os.getenv("CARTESIA_VOICE_ID") or None
-    greeting = ((config or {}).get("script") or {}).get("greeting") or DEFAULT_GREETING
+    greeting = _greeting_text(config)
 
     # Phase 4: selective S2S is evidence-gated (agent/s2s.py). Until a live
     # benchmark verdict justifies it, the greeting rides the cascaded
@@ -573,7 +590,11 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
         room=ctx.room,
     )
-    await session.generate_reply(instructions=greeting)
+    # Speak a fixed opening line directly through TTS instead of asking the LLM
+    # to generate one. generate_reply() runs a full Claude call (big system
+    # prompt + all tools) before any audio, so the caller heard several seconds
+    # of silence and talked over it. say() starts speaking almost immediately.
+    await session.say(greeting, allow_interruptions=True)
 
 
 def _start_platform_health_server() -> None:
@@ -604,4 +625,12 @@ def _start_platform_health_server() -> None:
 
 if __name__ == "__main__":
     _start_platform_health_server()
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
+    # Keep one warmed job process ready so a new call doesn't pay the
+    # ~1-2s process-spawn cost before the agent can join and greet.
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,
+            num_idle_processes=1,
+        )
+    )
