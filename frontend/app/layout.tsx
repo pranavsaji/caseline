@@ -1,8 +1,7 @@
 import "./globals.css";
-import Link from "next/link";
 import type { ReactNode } from "react";
 import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google";
-import ThemeToggle from "../components/ThemeToggle";
+import AppShell from "../components/AppShell";
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
@@ -38,21 +37,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
       <body>
-        <div className="shell">
-          <nav className="nav">
-            <span className="brand">Caseline</span>
-            <Link href="/">Calls &amp; Leads</Link>
-            <Link href="/threads">Threads</Link>
-            <Link href="/analytics">Analytics</Link>
-            <Link href="/tuning">Tuning</Link>
-            <Link href="/referrals">Referrals</Link>
-            <Link href="/studio">Config Studio</Link>
-            <Link href="/config">Agent Config</Link>
-            <span className="spacer" />
-            <ThemeToggle />
-          </nav>
-          {children}
-        </div>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

@@ -1,87 +1,106 @@
 import Link from "next/link";
-import { getChaserAnalytics, listThreads } from "@/lib/api";
+import { MessagesSquare } from "lucide-react";
+import { getChaserAnalytics, listThreads, type Thread } from "@/lib/api";
+import PageHeader from "@/components/PageHeader";
+import TileRow from "@/components/TileRow";
+import PulseTile, { pulseStatus } from "@/components/PulseTile";
+import StatTile from "@/components/StatTile";
+import Card from "@/components/Card";
+import DataTable, { type Column } from "@/components/DataTable";
+import Pill, { type PillTone } from "@/components/Pill";
+import EmptyState from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
 
-function StatusPill({ status, reason }: { status: string; reason: string | null }) {
-  if (status === "open") return <span className="pill ok">open</span>;
-  const cls = reason === "booked" ? "ok" : reason === "opted_out" ? "bad" : "muted";
-  return <span className={`pill ${cls}`}>{reason ?? "closed"}</span>;
+function statusTone(status: string, reason: string | null): { tone: PillTone; label: string } {
+  if (status === "open") return { tone: "ok", label: "open" };
+  if (reason === "booked") return { tone: "ok", label: "booked" };
+  if (reason === "opted_out") return { tone: "bad", label: "opted out" };
+  return { tone: "muted", label: reason ?? "closed" };
 }
+
+const columns: Column<Thread>[] = [
+  {
+    key: "id",
+    header: "Thread",
+    render: (t) => <Link href={`/threads/${encodeURIComponent(t.id)}`}>{t.id.slice(0, 8)}</Link>,
+  },
+  { key: "channel", header: "Channel", render: (t) => <Pill tone="info">{t.channel}</Pill> },
+  {
+    key: "goal",
+    header: "Goal",
+    render: (t) => (t.goal === "treatment_tracker" ? "treatment tracker" : t.goal),
+  },
+  {
+    key: "status",
+    header: "Status",
+    render: (t) => {
+      const s = statusTone(t.status, t.closed_reason);
+      return <Pill tone={s.tone}>{s.label}</Pill>;
+    },
+  },
+  {
+    key: "last_inbound_at",
+    header: "Last inbound",
+    render: (t) => (t.last_inbound_at ? t.last_inbound_at.slice(0, 19) : "—"),
+  },
+  {
+    key: "last_outbound_at",
+    header: "Last outbound",
+    render: (t) => (t.last_outbound_at ? t.last_outbound_at.slice(0, 19) : "—"),
+  },
+];
 
 export default async function ThreadsPage() {
   const [threads, chaser] = await Promise.all([listThreads(), getChaserAnalytics()]);
 
+  const p95 = chaser.first_contact_p95_seconds;
+  const p95Status = p95 == null ? null : pulseStatus(p95, chaser.slo_seconds);
+
   return (
-    <main>
-      <h1>Threads</h1>
+    <>
+      <PageHeader
+        title="Threads"
+        subtitle="Webform leads and inbound texts, and how fast the chaser reaches them."
+      />
 
-      <h2>Speed to lead (last {chaser.days} days)</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Web/ad leads</th>
-            <th>Contacted</th>
-            <th>First contact p50</th>
-            <th>First contact p95</th>
-            <th>Under 60 s</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>{chaser.web_ad_leads}</td>
-            <td>
-              {chaser.contacted}
-              {chaser.contact_rate != null && ` (${Math.round(chaser.contact_rate * 100)}%)`}
-            </td>
-            <td>{chaser.first_contact_p50_seconds != null ? `${chaser.first_contact_p50_seconds}s` : "—"}</td>
-            <td>
-              {chaser.first_contact_p95_seconds != null ? (
-                <span className={`pill ${chaser.first_contact_p95_seconds <= chaser.slo_seconds ? "ok" : "bad"}`}>
-                  {chaser.first_contact_p95_seconds}s
-                </span>
-              ) : (
-                "—"
-              )}
-            </td>
-            <td>{chaser.under_60s_rate != null ? `${Math.round(chaser.under_60s_rate * 100)}%` : "—"}</td>
-          </tr>
-        </tbody>
-      </table>
+      <TileRow>
+        <PulseTile
+          label="Speed to lead (p95)"
+          value={p95 ?? "—"}
+          unit={p95 != null ? "s" : undefined}
+          status={p95Status}
+          hint={`${chaser.slo_seconds}s first-contact SLO · last ${chaser.days}d`}
+        />
+        <StatTile
+          label="Contact rate"
+          value={chaser.contact_rate != null ? `${Math.round(chaser.contact_rate * 100)}%` : "—"}
+          footer={`${chaser.contacted} of ${chaser.web_ad_leads} web/ad leads`}
+        />
+        <StatTile
+          label="Reached under 60 s"
+          value={chaser.under_60s_rate != null ? `${Math.round(chaser.under_60s_rate * 100)}%` : "—"}
+          footer={
+            chaser.first_contact_p50_seconds != null
+              ? `median ${chaser.first_contact_p50_seconds}s`
+              : "—"
+          }
+        />
+      </TileRow>
 
-      <h2>Conversations</h2>
-      {threads.length === 0 ? (
-        <div className="empty">No threads yet. Webform leads and inbound texts land here.</div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Thread</th>
-              <th>Channel</th>
-              <th>Goal</th>
-              <th>Status</th>
-              <th>Last inbound</th>
-              <th>Last outbound</th>
-            </tr>
-          </thead>
-          <tbody>
-            {threads.map((t) => (
-              <tr key={t.id}>
-                <td>
-                  <Link href={`/threads/${encodeURIComponent(t.id)}`}>{t.id.slice(0, 8)}</Link>
-                </td>
-                <td>{t.channel}</td>
-                <td>{t.goal === "treatment_tracker" ? "treatment tracker" : t.goal}</td>
-                <td>
-                  <StatusPill status={t.status} reason={t.closed_reason} />
-                </td>
-                <td>{t.last_inbound_at ? t.last_inbound_at.slice(0, 19) : "—"}</td>
-                <td>{t.last_outbound_at ? t.last_outbound_at.slice(0, 19) : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </main>
+      <Card title="Conversations" className="stackCard">
+        <DataTable
+          columns={columns}
+          rows={threads}
+          getRowKey={(t) => t.id}
+          empty={
+            <EmptyState icon={MessagesSquare} title="No threads yet">
+              Webform leads and inbound texts land here — the chaser opens a
+              thread and starts working every one within seconds.
+            </EmptyState>
+          }
+        />
+      </Card>
+    </>
   );
 }

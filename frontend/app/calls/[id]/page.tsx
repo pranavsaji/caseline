@@ -1,6 +1,20 @@
+import { Radio, ListTree } from "lucide-react";
 import { getCall } from "@/lib/api";
+import PageHeader from "@/components/PageHeader";
+import TileRow from "@/components/TileRow";
+import PulseTile, { pulseStatus } from "@/components/PulseTile";
+import StatTile from "@/components/StatTile";
+import Card from "@/components/Card";
+import Pill from "@/components/Pill";
+import Notice from "@/components/Notice";
+import EmptyState from "@/components/EmptyState";
+import SoftButton from "@/components/SoftButton";
+import DataTable, { type Column } from "@/components/DataTable";
+import TranscriptTurn, { TranscriptList } from "@/components/TranscriptTurn";
 
 export const dynamic = "force-dynamic";
+
+const LATENCY_BUDGET_MS = 800;
 
 type Turn = { role: string; text: string; ts?: string | null };
 type TurnMetric = {
@@ -11,73 +25,114 @@ type TurnMetric = {
   total_ms: number;
 };
 
+const metricColumns: Column<TurnMetric>[] = [
+  { key: "speech_id", header: "Turn" },
+  {
+    key: "eou_delay_ms",
+    header: "EOU delay",
+    align: "right",
+    render: (m) => `${Math.round(m.eou_delay_ms)} ms`,
+  },
+  {
+    key: "llm_ttft_ms",
+    header: "LLM first token",
+    align: "right",
+    render: (m) => `${Math.round(m.llm_ttft_ms)} ms`,
+  },
+  {
+    key: "tts_ttfb_ms",
+    header: "TTS first byte",
+    align: "right",
+    render: (m) => `${Math.round(m.tts_ttfb_ms)} ms`,
+  },
+  {
+    key: "total_ms",
+    header: "Total",
+    align: "right",
+    render: (m) => (
+      <Pill tone={pulseStatus(m.total_ms, LATENCY_BUDGET_MS, { warnRatio: 650 / LATENCY_BUDGET_MS }) ?? "muted"}>
+        {Math.round(m.total_ms)} ms
+      </Pill>
+    ),
+  },
+];
+
 export default async function CallDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const call = await getCall(decodeURIComponent(id));
   const transcript: Turn[] = call.transcript ?? [];
   const metrics: TurnMetric[] = call.turn_metrics ?? [];
+  const p95: number | null = call.latency_p95_ms ?? null;
+  const p95Status = p95 == null ? null : pulseStatus(p95, LATENCY_BUDGET_MS, { warnRatio: 650 / LATENCY_BUDGET_MS });
 
   return (
-    <main>
-      <h1>Call {call.id}</h1>
-      <p>
-        {call.outcome && <span className="pill">{call.outcome}</span>}{" "}
-        {call.latency_p95_ms != null && (
-          <span className={`pill ${call.latency_p95_ms <= 800 ? "ok" : "bad"}`}>
-            {Math.round(call.latency_p95_ms)} ms p95 {call.latency_p95_ms <= 800 ? "(within budget)" : "(over budget)"}
-          </span>
-        )}{" "}
-        {call.recording_uri ? (
-          <a href={call.recording_uri}>recording</a>
+    <>
+      <PageHeader
+        title={`Call ${call.id}`}
+        subtitle={call.started_at ? `Started ${String(call.started_at).slice(0, 19)}` : undefined}
+        actions={
+          <>
+            {call.outcome ? <Pill tone="info">{call.outcome}</Pill> : null}
+            {call.recording_uri ? (
+              <a href={call.recording_uri}>
+                <SoftButton size="sm">
+                  <Radio size={15} aria-hidden /> Recording
+                </SoftButton>
+              </a>
+            ) : (
+              <Pill tone="muted">no recording</Pill>
+            )}
+          </>
+        }
+      />
+
+      <TileRow>
+        <PulseTile
+          label="Answer speed (p95)"
+          value={p95 ?? "—"}
+          unit={p95 != null ? "ms" : undefined}
+          status={p95Status}
+          hint={`${LATENCY_BUDGET_MS} ms per-turn budget`}
+        />
+        <StatTile label="Turns" value={transcript.length} footer="conversation exchanges" />
+        <StatTile label="Latency samples" value={metrics.length} footer="metered turns" />
+      </TileRow>
+
+      {call.summary ? (
+        <Notice tone="info" title="Summary">
+          {call.summary}
+        </Notice>
+      ) : null}
+
+      <Card title="Transcript" className="stackCard">
+        {transcript.length === 0 ? (
+          <EmptyState title="No transcript captured">
+            This call has no recorded transcript — it may have ended before the
+            agent spoke.
+          </EmptyState>
         ) : (
-          <span className="pill muted">no recording</span>
-        )}
-      </p>
-      {call.summary && <p className="notice">{call.summary}</p>}
-
-      <h2>Transcript</h2>
-      {transcript.length === 0 ? (
-        <div className="empty">No transcript captured for this call.</div>
-      ) : (
-        transcript.map((t, i) => (
-          <div key={i} className={`turn ${t.role === "assistant" ? "assistant" : ""}`}>
-            <div className="role">{t.role}</div>
-            <div>{t.text}</div>
-          </div>
-        ))
-      )}
-
-      <h2>Per-turn latency</h2>
-      {metrics.length === 0 ? (
-        <div className="empty">No latency samples.</div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Turn</th>
-              <th>EOU delay</th>
-              <th>LLM first token</th>
-              <th>TTS first byte</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {metrics.map((m) => (
-              <tr key={m.speech_id}>
-                <td>{m.speech_id}</td>
-                <td>{Math.round(m.eou_delay_ms)} ms</td>
-                <td>{Math.round(m.llm_ttft_ms)} ms</td>
-                <td>{Math.round(m.tts_ttfb_ms)} ms</td>
-                <td>
-                  <span className={`pill ${m.total_ms <= 800 ? "ok" : "bad"}`}>
-                    {Math.round(m.total_ms)} ms
-                  </span>
-                </td>
-              </tr>
+          <TranscriptList>
+            {transcript.map((t, i) => (
+              <TranscriptTurn key={i} role={t.role} meta={t.ts ? String(t.ts).slice(0, 19) : undefined}>
+                {t.text}
+              </TranscriptTurn>
             ))}
-          </tbody>
-        </table>
-      )}
-    </main>
+          </TranscriptList>
+        )}
+      </Card>
+
+      <Card title="Per-turn latency" className="stackCard">
+        <DataTable
+          columns={metricColumns}
+          rows={metrics}
+          getRowKey={(m) => m.speech_id}
+          empty={
+            <EmptyState icon={ListTree} title="No latency samples">
+              Per-turn answer-speed metrics appear here once the call is metered.
+            </EmptyState>
+          }
+        />
+      </Card>
+    </>
   );
 }

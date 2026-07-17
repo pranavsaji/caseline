@@ -1,6 +1,6 @@
 # Caseline Dashboard — UI Redesign Plan (Neomorphism)
 
-> **Status:** Phase 0 ✅ complete · Phase 1 ✅ complete · Phase 2 ⬜ · Phase 3 ⬜ · Phase 4 ⬜ — _(last updated 2026-07-16)_
+> **Status:** Phase 0 ✅ complete · Phase 1 ✅ complete · Phase 2 ✅ complete · Phase 3 ⬜ · Phase 4 ⬜ — _(last updated 2026-07-16)_
 
 > **Goal:** Turn the current flat, functional dashboard into a production-grade, friendly, and visually distinctive interface using a **neomorphic ("soft UI")** design language — without touching the Python backend or the `frontend/lib/api.ts` contract.
 >
@@ -286,8 +286,36 @@ Build `components/*` from §5, in dependency order: `Pill` → `Card` → `SoftB
 - For latency/SLO cells use `PulseTile` (or `pulseStatus()` + `Pill`) so health reads from the material, not just color.
 - CSS Module (`kit.module.css`) is ~16KB source but scoped and tree-split per route by Next.js — the <15KB global budget from Phase 0 (`globals.css` = 13.3KB) is unaffected.
 
-**Phase 2 — Shell + pages (1.5 days)**
+**Phase 2 — Shell + pages (1.5 days) — ✅ COMPLETE (2026-07-16)**
 Swap `layout.tsx` to `<AppShell>`; migrate pages in order of §9 (Overview → detail pages → Studio last). Keep each page's data layer identical.
+
+1. ✅ `layout.tsx` now renders `<AppShell>` (soft left sidebar → mobile top bar) in place of the flat `.nav`; fonts + pre-hydration theme bootstrap kept. The old `.nav`/`.shell`/element-restyle "backward-compat" block in `globals.css` was **removed** — every page is on the kit now, so those global `table`/`button`/`input` selectors would only fight the CSS-Module components (double table shadows inside wells, stray input margins). Only the `.theme-toggle` global (a plain `<button>` the shell pins) remains.
+2. ✅ All **9 pages migrated** to the Phase 1 kit, data layer + `lib/api.ts` calls unchanged:
+   - **Overview `/`** — `<PageHeader>` + summary `<TileRow>` (PulseTile answer-speed p95, StatTiles for consults booked & qualification rate); Recent calls / Leads / Booked consults → `<Card>` + `<DataTable>` with `<Pill>` cells and `<EmptyState>` empties. Added `getLatencyAnalytics` + `getOutcomeAnalytics` fetches (presentation-only, for the tile row).
+   - **Call detail `/calls/[id]`** — `<PageHeader>` (outcome pill + recording `<SoftButton>`), tile row (PulseTile p95 + StatTiles), summary `<Notice>`, transcript → `<TranscriptTurn>`/`<TranscriptList>` bubbles, per-turn latency → `<DataTable>` with `pulseStatus()`-toned `<Pill>` totals.
+   - **Analytics `/analytics`** — funnel `<TileRow>` (PulseTile + StatTiles), outcomes / latency-by-day / by-provider → `<DataTable>`, suppressed benchmarks → friendly `<Notice>`.
+   - **Threads `/threads`** — speed-to-lead PulseTile (first-contact SLO) + StatTiles, conversations `<DataTable>`.
+   - **Thread detail `/threads/[id]`** — `<TranscriptTurn>` bubbles (out=agent/in=caller), raw State JSON → mono `<Notice>`.
+   - **Tuning `/tuning`** — agreement-rate PulseTile (higher-is-better), decision matrix `<DataTable>`, suggestions as tone-warn `<Notice>`s, proposed rules → mono `<Notice>`.
+   - **Referrals `/referrals`** — referrals + partner network `<DataTable>`s, match reasons as inline `<Pill>` chips.
+   - **Studio `/studio`** — the showcase: four `<Card>` sections with `<SoftInput>`/`<Toggle>`/`<SoftSelect>`/`<SoftTextarea>`, `<SoftButton variant="primary">` publish + auto-dismissing toast `<Notice>`, test-call preview reusing `<TranscriptTurn>` with guardrail-tripped turns flagged `<Pill tone="bad">`.
+   - **Agent Config `/config`** — JSON sections → `<SoftTextarea>` in `<Card>`s with a **live red-inset validation ring** (shared `lib/json.ts#getConfigError`), publish disabled while any section is invalid, compiled instructions → read-only mono `<Notice>`.
+3. ✅ New helpers: `components/TileRow.tsx` (the §6 summary-row grid), `lib/json.ts` (shared JSON-parse error helper). Global utilities `.stackCard` / `.formGrid` / `.formRow` added to `globals.css` for page rhythm (kept global, not module, so component `className` passthrough works).
+
+**Files touched:** `frontend/app/layout.tsx`, `frontend/app/globals.css`, all 9 page files (`app/{page,calls/[id]/page,analytics/page,threads/page,threads/[id]/page,tuning/page,referrals/page,studio/page,config/page}.tsx`), `frontend/components/{AppShell,NavItem}.tsx` (icon prop crossed the server→client boundary — see learning below), `frontend/components/TileRow.tsx` (new), `frontend/lib/json.ts` (new). `lib/api.ts` + route handlers unchanged.
+
+**Validation performed:**
+- `npx tsc --noEmit` → clean (exit 0).
+- `npm run build` → all 8 routes compiled; `/kit` stays dev-only; First Load JS ~103–110 KB per route. **First build failed** on `/_not-found` prerender (see learning) — fixed, second build green.
+- **Runtime smoke test** (`next start`, real Railway-style backend on `:8000`): `/`, `/threads`, `/analytics`, `/tuning`, `/referrals`, `/studio`, `/config` all **HTTP 200**; `/kit` **404** (prod gate holds). Dynamic detail routes `/calls/[id]` and `/threads/[id]` **200** with real data (transcript bubbles `turnAgent`/`turnCaller`, per-turn latency, PulseTile all present). No `application error` / server-error markup in served HTML; hashed kit classes + `aria-current` active-nav confirmed.
+- **Visual check in Chrome, both themes:** Slate Light + Graphite Dark both render as textbook neomorphism — soft sidebar with the active item **inset**, PageHeader hero, summary tile rows, DataTables in inset wells with solid pills, accent-filled Toggle, primary publish button. **Console clean** (no errors/hydration warnings).
+- **Interaction test:** typed invalid JSON into `/config` → red inset validation ring + directive error text (`Invalid JSON — Expected property name…`) + Publish auto-disabled (`aria-invalid=true`), exactly as designed.
+
+**Notes / learnings for Phase 3:**
+- **Server→client prop boundary:** `AppShell` (server component, in `layout.tsx`) originally passed lucide **icon components** (functions) to the client `<NavItem>` — Next.js rejects this and it surfaced as a `/_not-found` **prerender failure at build time**, not in dev. Fix: pass an icon **name string** and resolve it to a component inside `NavItem` (client). Rule for later: never hand a function/component prop across the RSC boundary; key by string.
+- Pages no longer render their own `<main>` — `AppShell` provides the single `<main className={content}>`; page roots are fragments. Don't reintroduce a nested `<main>`.
+- The `PulseTile` "no data" fallback renders the em-dash in the healthy-green color (status `null` → `pulseOk`). Cosmetically reads slightly "healthy" when there's genuinely no data — candidate for a neutral `pulseNone` state in the Phase 3 polish pass if it bothers a partner.
+- Remaining for **Phase 3**: contrast audit (hard AA gate), keyboard walkthrough, mobile breakpoints (sidebar → top bar already responsive at ≤860px — verify on device), reduced-motion, Lighthouse, and the §8 microcopy sweep (much of it already applied: "Publish changes", directive errors, inviting empty states).
 
 **Phase 3 — Polish & a11y gate (½ day)**
 Contrast audit (hard gate), keyboard walkthrough of every page, mobile breakpoints (sidebar → bottom tabs), reduced-motion check, Lighthouse (target ≥ 95 a11y / ≥ 90 perf). Microcopy pass (§8).

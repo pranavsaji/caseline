@@ -1,94 +1,111 @@
-import { listReferralPartners, listReferrals } from "@/lib/api";
+import { Share2, Building2 } from "lucide-react";
+import {
+  listReferralPartners,
+  listReferrals,
+  type Referral,
+  type ReferralPartner,
+} from "@/lib/api";
+import PageHeader from "@/components/PageHeader";
+import TileRow from "@/components/TileRow";
+import StatTile from "@/components/StatTile";
+import Card from "@/components/Card";
+import DataTable, { type Column } from "@/components/DataTable";
+import Pill, { type PillTone } from "@/components/Pill";
+import EmptyState from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
 
-function StatusPill({ status }: { status: string }) {
-  const cls =
-    status === "accepted" ? "ok" : status === "declined" ? "bad" : status === "sent" ? "warn" : "";
-  return <span className={`pill ${cls}`}>{status}</span>;
+function statusTone(status: string): PillTone {
+  if (status === "accepted") return "ok";
+  if (status === "declined") return "bad";
+  if (status === "sent") return "warn";
+  return "muted";
 }
+
+const referralColumns: Column<Referral>[] = [
+  { key: "contact_name", header: "Client", render: (r) => r.contact_name ?? "—" },
+  { key: "practice_area", header: "Practice area", render: (r) => r.practice_area ?? "—" },
+  { key: "partner_name", header: "Partner" },
+  {
+    key: "match_reasons",
+    header: "Match",
+    render: (r) =>
+      (r.match_reasons ?? []).length ? (
+        <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 6 }}>
+          {r.match_reasons.map((reason, i) => (
+            <Pill key={i} tone="info">
+              {reason}
+            </Pill>
+          ))}
+        </span>
+      ) : (
+        "—"
+      ),
+  },
+  { key: "status", header: "Status", render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill> },
+  { key: "created_at", header: "Proposed", render: (r) => r.created_at?.slice(0, 19) ?? "—" },
+];
+
+const partnerColumns: Column<ReferralPartner>[] = [
+  { key: "name", header: "Firm" },
+  {
+    key: "practice_areas",
+    header: "Practice areas",
+    render: (p) => (p.practice_areas.length ? p.practice_areas.join(", ") : "all"),
+  },
+  { key: "states", header: "States", render: (p) => (p.states.length ? p.states.join(", ") : "any") },
+  { key: "contact", header: "Contact", render: (p) => p.contact_email ?? p.contact_phone ?? "—" },
+  {
+    key: "active",
+    header: "Active",
+    render: (p) => <Pill tone={p.active ? "ok" : "muted"}>{p.active ? "active" : "inactive"}</Pill>,
+  },
+];
 
 export default async function Referrals() {
   const [referrals, partners] = await Promise.all([listReferrals(), listReferralPartners()]);
+  const sent = referrals.filter((r) => r.status !== "proposed").length;
 
   return (
-    <main>
-      <h1>Smart Referrals</h1>
-      <p>
-        Declined-but-viable (refer-out) leads matched to your partner network.
-        Proposals are automatic; nothing is shared until a person sends the
-        referral with the client&apos;s consent recorded.
-      </p>
+    <>
+      <PageHeader
+        title="Smart referrals"
+        subtitle="Declined-but-viable leads matched to your partner network — nothing is shared until a person sends it with the client's consent."
+      />
 
-      <h2>Referrals</h2>
-      {referrals.length === 0 ? (
-        <div className="empty">
-          {partners.length === 0
-            ? "Register a partner firm to switch referrals on — no partners, no proposals."
-            : "No referrals proposed yet."}
-        </div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Client</th>
-              <th>Practice area</th>
-              <th>Partner</th>
-              <th>Match</th>
-              <th>Status</th>
-              <th>Proposed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {referrals.map((r) => (
-              <tr key={r.id}>
-                <td>{r.contact_name ?? "—"}</td>
-                <td>{r.practice_area ?? "—"}</td>
-                <td>{r.partner_name}</td>
-                <td>{(r.match_reasons ?? []).join("; ")}</td>
-                <td>
-                  <StatusPill status={r.status} />
-                </td>
-                <td>{r.created_at}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <TileRow>
+        <StatTile label="Referrals proposed" value={referrals.length} footer={`${sent} sent`} />
+        <StatTile label="Partner firms" value={partners.length} footer={`${partners.filter((p) => p.active).length} active`} />
+      </TileRow>
 
-      <h2>Partner network</h2>
-      {partners.length === 0 ? (
-        <div className="empty">
-          No partners yet. Add one via <code>POST /v1/referral-partners</code>.
-        </div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Firm</th>
-              <th>Practice areas</th>
-              <th>States</th>
-              <th>Contact</th>
-              <th>Active</th>
-            </tr>
-          </thead>
-          <tbody>
-            {partners.map((p) => (
-              <tr key={p.id}>
-                <td>{p.name}</td>
-                <td>{p.practice_areas.length ? p.practice_areas.join(", ") : "all"}</td>
-                <td>{p.states.length ? p.states.join(", ") : "any"}</td>
-                <td>{p.contact_email ?? p.contact_phone ?? "—"}</td>
-                <td>
-                  <span className={`pill ${p.active ? "ok" : "muted"}`}>
-                    {p.active ? "active" : "inactive"}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </main>
+      <Card title="Referrals" className="stackCard">
+        <DataTable
+          columns={referralColumns}
+          rows={referrals}
+          getRowKey={(r) => r.id}
+          empty={
+            <EmptyState icon={Share2} title="No referrals proposed yet">
+              {partners.length === 0
+                ? "Register a partner firm to switch referrals on — no partners, no proposals."
+                : "Refer-out leads will be matched to your partner network automatically."}
+            </EmptyState>
+          }
+        />
+      </Card>
+
+      <Card title="Partner network" className="stackCard">
+        <DataTable
+          columns={partnerColumns}
+          rows={partners}
+          getRowKey={(p) => p.id}
+          empty={
+            <EmptyState icon={Building2} title="No partners yet">
+              Add a partner firm via POST /v1/referral-partners to start matching
+              refer-out leads.
+            </EmptyState>
+          }
+        />
+      </Card>
+    </>
   );
 }

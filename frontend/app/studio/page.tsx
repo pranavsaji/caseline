@@ -4,9 +4,22 @@
 // qualification editing with a test-call preview that runs the *same brain*
 // the live channels use — verify an edit before it ever meets a caller.
 // Raw JSON power-editing stays available on the Agent Config page.
+// Phase 2 UI: neomorphic component kit (Cards, SoftInput/Toggle/SoftSelect,
+// primary SoftButton + toast, TranscriptTurn preview panel).
 
 import { useEffect, useState } from "react";
+import { PlayCircle } from "lucide-react";
 import type { PreviewResult } from "@/lib/api";
+import PageHeader from "@/components/PageHeader";
+import Card from "@/components/Card";
+import SoftButton from "@/components/SoftButton";
+import SoftInput from "@/components/inputs/SoftInput";
+import SoftTextarea from "@/components/inputs/SoftTextarea";
+import SoftSelect from "@/components/inputs/SoftSelect";
+import Toggle from "@/components/Toggle";
+import Pill from "@/components/Pill";
+import Notice from "@/components/Notice";
+import TranscriptTurn, { TranscriptList } from "@/components/TranscriptTurn";
 
 type Sections = {
   script: Record<string, unknown>;
@@ -52,11 +65,17 @@ export default function StudioPage() {
       .catch((e) => setStatus({ kind: "bad", text: `Failed to load config: ${e}` }));
   }, []);
 
+  // Auto-dismiss the success toast; leave errors up until the next action.
+  useEffect(() => {
+    if (status?.kind !== "ok") return;
+    const t = setTimeout(() => setStatus(null), 4000);
+    return () => clearTimeout(t);
+  }, [status]);
+
   const set = (section: keyof Sections, key: string, value: unknown) =>
     setSections((s) => ({ ...s, [section]: { ...s[section], [key]: value } }));
 
-  const text = (section: keyof Sections, key: string) =>
-    String(sections[section][key] ?? "");
+  const text = (section: keyof Sections, key: string) => String(sections[section][key] ?? "");
 
   const list = (section: keyof Sections, key: string) =>
     Array.isArray(sections[section][key]) ? (sections[section][key] as string[]) : [];
@@ -78,7 +97,7 @@ export default function StudioPage() {
         }),
       });
       if (!res.ok) setStatus({ kind: "bad", text: `Rejected: ${await res.text()}` });
-      else setStatus({ kind: "ok", text: "Saved. Live within seconds on the next call or text." });
+      else setStatus({ kind: "ok", text: "Published. Live within seconds on the next call or text." });
     } finally {
       setSaving(false);
     }
@@ -101,7 +120,7 @@ export default function StudioPage() {
         }),
       });
       if (!res.ok) {
-        setStatus({ kind: "bad", text: `Preview rejected: ${await res.text()}` });
+        setStatus({ kind: "bad", text: `Preview couldn't run. ${await res.text()}` });
         setPreview(null);
       } else {
         setPreview(await res.json());
@@ -112,69 +131,64 @@ export default function StudioPage() {
   }
 
   return (
-    <main>
-      <h1>Config studio</h1>
-      <p style={{ color: "var(--muted)" }}>
-        Edit what your agent says and how it qualifies — then run a test conversation below
-        before saving. These settings drive voice calls, SMS threads, and the lead chaser alike.
-      </p>
-      {status && <div className={`notice ${status.kind}`}>{status.text}</div>}
+    <>
+      <PageHeader
+        title="Config studio"
+        subtitle="Edit what your agent says and how it qualifies — then run a test conversation before publishing. These settings drive voice calls, SMS threads, and the lead chaser alike."
+        actions={
+          <SoftButton variant="primary" onClick={save} disabled={saving || !agentId}>
+            {saving ? "Publishing…" : "Publish changes"}
+          </SoftButton>
+        }
+      />
 
-      <h2>Script</h2>
-      <div className="notice">
-        <label>
-          Practice area{" "}
-          <input
+      {status && (
+        <Notice tone={status.kind === "ok" ? "ok" : "bad"} title={status.kind === "ok" ? "Published" : "Not saved"}>
+          {status.text}
+        </Notice>
+      )}
+
+      <Card title="Script" className="stackCard">
+        <div className="formGrid">
+          <SoftInput
+            label="Practice area"
             value={text("script", "practice_area")}
             onChange={(e) => set("script", "practice_area", e.target.value)}
           />
-        </label>
-        <br />
-        <label>
-          Firm state (2 letters, drives recording-consent rules){" "}
-          <input
+          <SoftInput
+            label="Firm state (2 letters — drives recording-consent rules)"
             maxLength={2}
             value={text("script", "firm_state")}
             onChange={(e) => set("script", "firm_state", e.target.value.toUpperCase() || null)}
           />
-        </label>
-        <br />
-        <label>
-          <input
-            type="checkbox"
+        </div>
+        <div className="formRow">
+          <Toggle
+            label="Recording & AI disclosure line (forced on when two-party consent rules apply)"
             checked={Boolean(sections.script.recording_disclosure ?? true)}
             onChange={(e) => set("script", "recording_disclosure", e.target.checked)}
-          />{" "}
-          Recording &amp; AI disclosure line (forced on when two-party consent rules apply)
-        </label>
-        <br />
-        <label>
-          Extra instructions
-          <textarea
-            style={{ minHeight: 70 }}
+          />
+        </div>
+        <div className="formRow">
+          <SoftTextarea
+            label="Extra instructions"
+            mono={false}
             value={text("script", "extra_instructions")}
             onChange={(e) => set("script", "extra_instructions", e.target.value)}
           />
-        </label>
-      </div>
+        </div>
+      </Card>
 
-      <h2>Qualification</h2>
-      <div className="notice">
-        <label>
-          Statute-of-limitations gate (days){" "}
-          <input
+      <Card title="Qualification" className="stackCard">
+        <div className="formGrid">
+          <SoftInput
+            label="Statute-of-limitations gate (days)"
             type="number"
             value={Number(sections.qualification.statute_of_limitations_days ?? 730)}
-            onChange={(e) =>
-              set("qualification", "statute_of_limitations_days", Number(e.target.value))
-            }
+            onChange={(e) => set("qualification", "statute_of_limitations_days", Number(e.target.value))}
           />
-        </label>
-        <br />
-        <label>
-          Refer-out injuries (comma separated){" "}
-          <input
-            style={{ width: "60%" }}
+          <SoftInput
+            label="Refer-out injuries (comma separated)"
             value={list("qualification", "refer_out_injuries").join(", ")}
             onChange={(e) =>
               set(
@@ -184,45 +198,39 @@ export default function StudioPage() {
               )
             }
           />
-        </label>
-      </div>
+        </div>
+      </Card>
 
-      <h2>Routing</h2>
-      <div className="notice">
-        <label>
-          Transfer number{" "}
-          <input
+      <Card title="Routing" className="stackCard">
+        <div className="formGrid">
+          <SoftInput
+            label="Transfer number"
             value={text("routing", "transfer_number")}
             onChange={(e) => set("routing", "transfer_number", e.target.value || null)}
           />
-        </label>
-        <br />
-        <label>
-          After-hours behavior{" "}
-          <select
+          <SoftSelect
+            label="After-hours behavior"
             value={text("routing", "after_hours_behavior") || "take_message"}
             onChange={(e) => set("routing", "after_hours_behavior", e.target.value)}
           >
             <option value="take_message">take a message</option>
             <option value="voicemail">voicemail</option>
-          </select>
-        </label>
-      </div>
+          </SoftSelect>
+        </div>
+      </Card>
 
-      <h2>Guardrails</h2>
-      <div className="notice">
-        <label>
-          Deflection line
-          <textarea
-            style={{ minHeight: 50 }}
+      <Card title="Guardrails" className="stackCard">
+        <div className="formRow">
+          <SoftTextarea
+            label="Deflection line"
+            mono={false}
             value={text("guardrails", "deflection_line")}
             onChange={(e) => set("guardrails", "deflection_line", e.target.value)}
           />
-        </label>
-        <label>
-          Extra blocked patterns (one regex per line)
-          <textarea
-            style={{ minHeight: 50 }}
+        </div>
+        <div className="formRow">
+          <SoftTextarea
+            label="Extra blocked patterns (one regex per line)"
             value={list("guardrails", "extra_blocked_patterns").join("\n")}
             onChange={(e) =>
               set(
@@ -232,52 +240,48 @@ export default function StudioPage() {
               )
             }
           />
-        </label>
-      </div>
+        </div>
+      </Card>
 
-      <p>
-        <button onClick={save} disabled={saving || !agentId}>
-          {saving ? "Saving…" : "Save config"}
-        </button>
-      </p>
+      <Card
+        title="Test-call preview"
+        className="stackCard"
+        actions={
+          <SoftButton onClick={runPreview} disabled={previewing || !agentId}>
+            <PlayCircle size={16} aria-hidden /> {previewing ? "Running…" : "Run preview"}
+          </SoftButton>
+        }
+      >
+        <SoftTextarea
+          label="Caller replies, one per line — previewed against the edits above (saved or not), with zero side effects."
+          value={callerScript}
+          onChange={(e) => setCallerScript(e.target.value)}
+        />
 
-      <h2>Test-call preview</h2>
-      <p style={{ color: "var(--muted)" }}>
-        Caller replies, one per line — previewed against the edits above (saved or not),
-        with zero side effects.
-      </p>
-      <textarea value={callerScript} onChange={(e) => setCallerScript(e.target.value)} />
-      <p>
-        <button onClick={runPreview} disabled={previewing || !agentId}>
-          {previewing ? "Running…" : "Run preview"}
-        </button>
-      </p>
-
-      {preview && (
-        <>
-          {preview.turns.map((t, i) => (
-            <div key={i} className={`turn ${t.role === "agent" ? "assistant" : ""}`}>
-              <div className="role">
-                {t.role}
-                {t.guardrail_tripped ? ` · guardrail: ${t.guardrail_tripped}` : ""}
-              </div>
-              {t.text}
-            </div>
-          ))}
-          <div className="notice">
-            <strong>Outcome:</strong> {preview.closed_reason ?? `in progress (${preview.final_step})`}
-            {preview.actions.length > 0 && (
-              <>
-                {" · "}
-                <strong>Actions:</strong>{" "}
-                {preview.actions
+        {preview && (
+          <div className="stackCard">
+            <TranscriptList>
+              {preview.turns.map((t, i) => (
+                <TranscriptTurn
+                  key={i}
+                  role={t.role}
+                  speaker={t.role === "agent" ? "agent" : "caller"}
+                  tag={t.guardrail_tripped ? <Pill tone="bad">guardrail: {t.guardrail_tripped}</Pill> : undefined}
+                >
+                  {t.text}
+                </TranscriptTurn>
+              ))}
+            </TranscriptList>
+            <Notice tone="info" title="Result">
+              {preview.closed_reason ?? `in progress (${preview.final_step})`}
+              {preview.actions.length > 0 &&
+                ` · actions: ${preview.actions
                   .map((a) => `${a.kind}${a.decision ? ` → ${a.decision}` : ""}`)
-                  .join(", ")}
-              </>
-            )}
+                  .join(", ")}`}
+            </Notice>
           </div>
-        </>
-      )}
-    </main>
+        )}
+      </Card>
+    </>
   );
 }

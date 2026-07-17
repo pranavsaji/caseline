@@ -2,15 +2,23 @@
 
 // Raw-but-safe config editing (plan.md Workstream D): each jsonb section is
 // an editable JSON form, validated client-side before submit and again by
-// pydantic on the server. The polished config studio is Phase 3.
+// pydantic on the server. The polished self-serve editor is the Config Studio.
+// Phase 2 UI: neomorphic kit — SoftTextarea with a live red inset validation
+// ring, compiled instructions in a read-only Notice.
 
 import { useEffect, useState } from "react";
+import { getConfigError } from "@/lib/json";
+import PageHeader from "@/components/PageHeader";
+import Card from "@/components/Card";
+import SoftButton from "@/components/SoftButton";
+import SoftTextarea from "@/components/inputs/SoftTextarea";
+import Notice from "@/components/Notice";
 
 const SECTIONS = [
-  ["script", "script_config", "Script (template, greeting, practice area, disclosure)"],
-  ["qualification", "qualification_rules", "Qualification rules (SOL days, refer-out injuries)"],
-  ["routing", "routing_rules", "Routing (transfer number, after-hours behavior)"],
-  ["guardrails", "guardrails", "Guardrails (extra blocked patterns, deflection line)"],
+  ["script", "script_config", "Script", "Template, greeting, practice area, disclosure"],
+  ["qualification", "qualification_rules", "Qualification rules", "SOL days, refer-out injuries"],
+  ["routing", "routing_rules", "Routing", "Transfer number, after-hours behavior"],
+  ["guardrails", "guardrails", "Guardrails", "Extra blocked patterns, deflection line"],
 ] as const;
 
 export default function ConfigPage() {
@@ -40,6 +48,12 @@ export default function ConfigPage() {
     load().catch((e) => setStatus({ kind: "bad", text: String(e) }));
   }, []);
 
+  useEffect(() => {
+    if (status?.kind !== "ok") return;
+    const t = setTimeout(() => setStatus(null), 4000);
+    return () => clearTimeout(t);
+  }, [status]);
+
   async function save() {
     if (!agentId) return;
     const body: Record<string, unknown> = { agent_id: agentId };
@@ -62,7 +76,7 @@ export default function ConfigPage() {
       if (!res.ok) {
         setStatus({ kind: "bad", text: `Rejected: ${await res.text()}` });
       } else {
-        setStatus({ kind: "ok", text: "Saved. Live within seconds on the next call." });
+        setStatus({ kind: "ok", text: "Published. Live within seconds on the next call." });
         await load();
       }
     } finally {
@@ -70,27 +84,46 @@ export default function ConfigPage() {
     }
   }
 
+  const anyInvalid = SECTIONS.some(([readKey]) => getConfigError(values[readKey]) != null);
+
   return (
-    <main>
-      <h1>Agent config</h1>
-      {status && <div className={`notice ${status.kind}`}>{status.text}</div>}
-      {SECTIONS.map(([readKey, , label]) => (
-        <section key={readKey}>
-          <h2>{label}</h2>
-          <textarea
-            value={values[readKey] ?? ""}
-            onChange={(e) => setValues((v) => ({ ...v, [readKey]: e.target.value }))}
-            spellCheck={false}
-          />
-        </section>
-      ))}
-      <p>
-        <button onClick={save} disabled={saving || !agentId}>
-          {saving ? "Saving…" : "Save config"}
-        </button>
-      </p>
-      <h2>Compiled instructions (what the agent actually runs)</h2>
-      <div className="notice" style={{ whiteSpace: "pre-wrap" }}>{instructions}</div>
-    </main>
+    <>
+      <PageHeader
+        title="Agent config"
+        subtitle="Raw JSON power-editing for each config section. Validated as you type and again by the server before it goes live."
+        actions={
+          <SoftButton variant="primary" onClick={save} disabled={saving || !agentId || anyInvalid}>
+            {saving ? "Publishing…" : "Publish changes"}
+          </SoftButton>
+        }
+      />
+
+      {status && (
+        <Notice tone={status.kind === "ok" ? "ok" : "bad"} title={status.kind === "ok" ? "Published" : "Not saved"}>
+          {status.text}
+        </Notice>
+      )}
+
+      {SECTIONS.map(([readKey, , label, desc]) => {
+        const error = getConfigError(values[readKey]);
+        return (
+          <Card key={readKey} title={label} className="stackCard">
+            <SoftTextarea
+              label={desc}
+              value={values[readKey] ?? ""}
+              onChange={(e) => setValues((v) => ({ ...v, [readKey]: e.target.value }))}
+              spellCheck={false}
+              error={error ?? undefined}
+            />
+          </Card>
+        );
+      })}
+
+      <Card title="Compiled instructions" className="stackCard">
+        <Notice tone="info" icon={false}>
+          <pre>{instructions || "—"}</pre>
+        </Notice>
+      </Card>
+    </>
   );
 }

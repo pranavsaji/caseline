@@ -2,8 +2,29 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  BarChart3,
+  Braces,
+  LayoutGrid,
+  MessagesSquare,
+  Share2,
+  SlidersHorizontal,
+  PencilRuler,
+} from "lucide-react";
 import type { ComponentType } from "react";
 import styles from "./kit.module.css";
+
+/** Icon components stay on the client side of the boundary — server components
+ *  can't hand a function prop to a client component, so we key by name. */
+const ICONS: Record<string, ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>> = {
+  overview: LayoutGrid,
+  threads: MessagesSquare,
+  analytics: BarChart3,
+  tuning: SlidersHorizontal,
+  referrals: Share2,
+  studio: PencilRuler,
+  config: Braces,
+};
 
 /**
  * Neomorphic sidebar link. Raised-on-hover, **pressed/inset when active** so
@@ -13,14 +34,15 @@ import styles from "./kit.module.css";
 export default function NavItem({
   href,
   label,
-  icon: Icon,
+  icon,
 }: {
   href: string;
   label: string;
-  icon: ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>;
+  icon: string;
 }) {
   const pathname = usePathname();
   const active = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+  const Icon = ICONS[icon] ?? LayoutGrid;
   return (
     <Link
       href={href}

@@ -142,6 +142,20 @@ h1, h2, h3 { font-family: var(--font-display); }
 /* Numeric data should not jitter between rows. */
 .tabular { font-variant-numeric: tabular-nums; }
 
+/* Vertical rhythm between stacked cards/sections on redesigned pages.
+   (Global, not a CSS Module class, so component `className` passthrough works.) */
+.stackCard { margin-top: 20px; }
+.stackCard:first-child { margin-top: 0; }
+
+/* Form layout helpers for the Studio / Config pages. Two-up on wide screens,
+   single column on narrow; consistent vertical gap between stacked rows. */
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+.formRow { margin-top: 16px; }
+
 /* =========================================================================
    Neomorphic material primitives (composed by the Phase 1 component kit)
    ========================================================================= */
@@ -162,196 +176,34 @@ h1, h2, h3 { font-family: var(--font-display); }
 }
 
 /* =========================================================================
-   Existing page vocabulary — restyled onto the soft material, markup
-   unchanged. Full component migration lands in Phase 2.
+   Chrome that lives outside the CSS-Module kit.
+   As of Phase 2 every page renders the neomorphic component kit
+   (components/*, kit.module.css); the old backward-compat element/class
+   restyles were removed so they can't fight the kit (double table shadows,
+   stray input margins). Only the ThemeToggle button — a plain <button> the
+   AppShell pins in its footer — still needs a global style here.
    ========================================================================= */
-.shell { max-width: 1080px; margin: 0 auto; padding: 24px; }
 
-.nav {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 12px 16px;
-  margin-bottom: 28px;
-  background: var(--surface);
-  box-shadow: var(--nm-raised);
-  border-radius: var(--radius);
-}
-.nav .brand {
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 16px;
-  letter-spacing: -0.01em;
-  color: var(--text);
-  margin-right: 8px;
-}
-.nav a {
-  color: var(--muted);
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  transition: color 0.15s ease, box-shadow 0.15s ease;
-}
-.nav a:hover { color: var(--text); text-decoration: none; box-shadow: var(--nm-flat); }
-.nav .spacer { margin-left: auto; }
-
-/* Neutral soft toggle (overrides the accent-filled base button). */
+/* Neutral soft toggle (never the accent-filled variant). */
 .theme-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   background: var(--surface);
   color: var(--muted);
+  border: none;
+  border-radius: var(--radius-sm);
   box-shadow: var(--nm-flat);
   padding: 7px 12px;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-.theme-toggle:hover { background: var(--surface); color: var(--text); }
-.theme-toggle:active { transform: translateY(1px); box-shadow: var(--nm-pressed); }
-.theme-toggle__label { line-height: 1; }
-
-h1 {
-  font-size: 32px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0 0 20px;
-}
-h2 {
-  font-size: 13px;
-  font-weight: 600;
-  margin: 28px 0 12px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  background: var(--surface);
-  box-shadow: var(--nm-raised);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-th, td { text-align: left; padding: 11px 16px; vertical-align: top; }
-th {
-  color: var(--muted);
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-tbody tr { border-top: 1px solid var(--border); }
-tbody tr:hover { background: var(--surface-raised); }
-
-.pill {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--muted) 14%, transparent);
-}
-.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); }
-.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 18%, transparent); }
-.pill.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 16%, transparent); }
-.pill.muted { color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
-
-.turn {
-  padding: 12px 16px;
-  margin: 12px 0;
-  background: var(--surface);
-  box-shadow: var(--nm-pressed);
-  border-radius: var(--radius);
-}
-.turn.assistant {
-  box-shadow: var(--nm-raised);
-  border-left: 3px solid var(--accent);
-}
-.turn .role {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-textarea {
-  width: 100%;
-  min-height: 140px;
-  background: var(--surface);
-  color: var(--text);
-  border: none;
-  box-shadow: var(--nm-pressed);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-}
-textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-button {
-  background: var(--accent);
-  color: var(--on-accent);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: 9px 20px;
   font-family: var(--font-body);
-  font-size: 14px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: var(--nm-flat);
-  transition: transform 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
 }
-button:hover { background: var(--accent-deep); }
-button:active { transform: translateY(1px); box-shadow: var(--nm-pressed); }
-button:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
-
-.notice {
-  margin: 12px 0;
-  padding: 12px 16px;
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: var(--nm-pressed);
-}
-.notice.ok { border-left: 3px solid var(--ok); }
-.notice.bad { border-left: 3px solid var(--bad); }
-
-.empty {
-  color: var(--muted);
-  padding: 28px;
-  text-align: center;
-  background: var(--surface);
-  box-shadow: var(--nm-pressed);
-  border-radius: var(--radius);
-}
-
-code {
-  background: var(--surface);
-  box-shadow: var(--nm-flat);
-  border-radius: 6px;
-  padding: 1px 6px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-}
-
-/* Config studio form controls */
-input, select {
-  background: var(--surface);
-  color: var(--text);
-  border: none;
-  box-shadow: var(--nm-pressed);
-  border-radius: var(--radius-sm);
-  padding: 7px 11px;
-  font-family: var(--font-body);
-  font-size: 13px;
-  margin: 2px 0 8px;
-}
-input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input[type="checkbox"] { width: auto; margin-right: 6px; box-shadow: none; }
-label { display: inline-block; margin: 4px 0; }
+.theme-toggle:hover { color: var(--text); box-shadow: var(--nm-raised); }
+.theme-toggle:active { transform: translateY(1px); box-shadow: var(--nm-pressed); }
+.theme-toggle__label { line-height: 1; }
 
 /* =========================================================================
    Motion — respect reduced-motion. Shadows are decoration; every state is

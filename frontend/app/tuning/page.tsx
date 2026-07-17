@@ -1,96 +1,97 @@
-import { getTuningSuggestions } from "@/lib/api";
+import { SlidersHorizontal, Lightbulb } from "lucide-react";
+import { getTuningSuggestions, type TuningSuggestion } from "@/lib/api";
+import PageHeader from "@/components/PageHeader";
+import TileRow from "@/components/TileRow";
+import PulseTile, { pulseStatus } from "@/components/PulseTile";
+import StatTile from "@/components/StatTile";
+import Card from "@/components/Card";
+import DataTable, { type Column } from "@/components/DataTable";
+import Pill from "@/components/Pill";
+import Notice from "@/components/Notice";
+import EmptyState from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
 
+const AGREEMENT_TARGET = 0.8;
+
+type MatrixRow = { decision: string; accepted: number; rejected: number };
+
+const matrixColumns: Column<MatrixRow>[] = [
+  { key: "decision", header: "Engine decision", render: (r) => <Pill tone="info">{r.decision}</Pill> },
+  { key: "accepted", header: "Attorney accepted", align: "right" },
+  { key: "rejected", header: "Attorney rejected", align: "right" },
+];
+
 export default async function Tuning() {
   const report = await getTuningSuggestions(90);
-  const decisions = Object.keys(report.matrix);
+  const matrixRows: MatrixRow[] = Object.keys(report.matrix).map((decision) => ({
+    decision,
+    accepted: report.matrix[decision].accepted ?? 0,
+    rejected: report.matrix[decision].rejected ?? 0,
+  }));
+  const agreement = report.agreement_rate;
+  const agreementStatus =
+    agreement == null ? null : pulseStatus(agreement, AGREEMENT_TARGET, { higherIsBetter: true, warnRatio: 0.75 });
 
   return (
-    <main>
-      <h1>Qualification Tuning</h1>
-      <p>
-        Attorney verdicts on {report.reviews} reviewed lead
-        {report.reviews === 1 ? "" : "s"} (last {report.days} days)
-        {report.agreement_rate != null && (
-          <>
-            {" "}
-            — engine/attorney agreement{" "}
-            <span className={`pill ${report.agreement_rate >= 0.8 ? "ok" : "warn"}`}>
-              {Math.round(report.agreement_rate * 100)}%
-            </span>
-          </>
+    <>
+      <PageHeader
+        title="Qualification tuning"
+        subtitle="How often the engine's qualification call matches an attorney's verdict — and where to tighten the rules."
+      />
+
+      <TileRow>
+        <PulseTile
+          label="Engine / attorney agreement"
+          value={agreement != null ? `${Math.round(agreement * 100)}%` : "—"}
+          status={agreementStatus}
+          hint={`${Math.round(AGREEMENT_TARGET * 100)}% target · ${report.reviews} reviews · last ${report.days}d`}
+        />
+        <StatTile label="Reviews" value={report.reviews} footer={`last ${report.days} days`} />
+        <StatTile label="Open suggestions" value={report.suggestions.length} footer="advisory rule changes" />
+      </TileRow>
+
+      <Card title="Engine decision vs attorney verdict" className="stackCard">
+        <DataTable
+          columns={matrixColumns}
+          rows={matrixRows}
+          getRowKey={(r) => r.decision}
+          empty={
+            <EmptyState icon={SlidersHorizontal} title="No reviews yet">
+              Attorneys record accept/reject verdicts on leads via the API
+              (POST /v1/leads/&#123;id&#125;/review) — the tuning loop starts once
+              a few land.
+            </EmptyState>
+          }
+        />
+      </Card>
+
+      <Card title="Suggestions" className="stackCard">
+        {report.suggestions.length === 0 ? (
+          <EmptyState icon={Lightbulb} title="Nothing to suggest">
+            Either the rules already match attorney behavior, or there aren't
+            enough verdicts yet (5+ per pattern required).
+          </EmptyState>
+        ) : (
+          <div>
+            {report.suggestions.map((s: TuningSuggestion) => (
+              <Notice key={s.kind + s.detail} tone="warn" title={s.kind.replaceAll("_", " ")}>
+                {s.detail}
+              </Notice>
+            ))}
+          </div>
         )}
-        . Suggestions are advisory: apply the proposed rules from the Config
-        Studio when an attorney signs off.
-      </p>
-
-      <h2>Engine decision vs attorney verdict</h2>
-      {decisions.length === 0 ? (
-        <div className="empty">
-          No reviews yet. Attorneys record accept/reject verdicts on leads via
-          the API (<code>POST /v1/leads/&#123;id&#125;/review</code>).
-        </div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Engine decision</th>
-              <th>Attorney accepted</th>
-              <th>Attorney rejected</th>
-            </tr>
-          </thead>
-          <tbody>
-            {decisions.map((d) => (
-              <tr key={d}>
-                <td>
-                  <span className="pill">{d}</span>
-                </td>
-                <td>{report.matrix[d].accepted ?? 0}</td>
-                <td>{report.matrix[d].rejected ?? 0}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-
-      <h2>Suggestions</h2>
-      {report.suggestions.length === 0 ? (
-        <div className="empty">
-          Nothing to suggest — either the rules match attorney behavior or
-          there are not enough verdicts yet (5+ per pattern required).
-        </div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Change</th>
-              <th>Why</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.suggestions.map((s) => (
-              <tr key={s.kind + s.detail}>
-                <td>
-                  <span className="pill warn">{s.kind.replaceAll("_", " ")}</span>
-                </td>
-                <td>{s.detail}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      </Card>
 
       {report.proposed_rules && (
-        <>
-          <h2>Proposed qualification rules</h2>
-          <p>
-            Review with an attorney, then apply via the Config Studio (or{" "}
-            <code>PUT /v1/agents/&#123;id&#125;/config</code>).
-          </p>
-          <pre>{JSON.stringify(report.proposed_rules, null, 2)}</pre>
-        </>
+        <Card title="Proposed qualification rules" className="stackCard">
+          <Notice tone="info" icon={false}>
+            Review with an attorney, then apply from the Config Studio (or PUT
+            /v1/agents/&#123;id&#125;/config).
+            <pre>{JSON.stringify(report.proposed_rules, null, 2)}</pre>
+          </Notice>
+        </Card>
       )}
-    </main>
+    </>
   );
 }

@@ -1,4 +1,20 @@
-import { getBenchmarks, getLatencyAnalytics, getOutcomeAnalytics } from "@/lib/api";
+import { BarChart3, Gauge, Users2 } from "lucide-react";
+import {
+  getBenchmarks,
+  getLatencyAnalytics,
+  getOutcomeAnalytics,
+  type BenchmarkMetric,
+  type LatencyAnalytics,
+} from "@/lib/api";
+import PageHeader from "@/components/PageHeader";
+import TileRow from "@/components/TileRow";
+import StatTile from "@/components/StatTile";
+import PulseTile, { pulseStatus } from "@/components/PulseTile";
+import Card from "@/components/Card";
+import DataTable, { type Column } from "@/components/DataTable";
+import Pill from "@/components/Pill";
+import Notice from "@/components/Notice";
+import EmptyState from "@/components/EmptyState";
 
 export const dynamic = "force-dynamic";
 
@@ -7,10 +23,15 @@ function pct(rate: number | null): string {
 }
 
 function SloPill({ p95, slo }: { p95: number | null; slo: number }) {
-  if (p95 == null) return <span className="pill muted">no data</span>;
-  const cls = p95 <= 650 ? "ok" : p95 <= slo ? "warn" : "bad";
-  return <span className={`pill ${cls}`}>{Math.round(p95)} ms</span>;
+  if (p95 == null) return <Pill tone="muted">no data</Pill>;
+  const status = pulseStatus(p95, slo, { warnRatio: 650 / slo });
+  return <Pill tone={status ?? "muted"}>{Math.round(p95)} ms</Pill>;
 }
+
+type OutcomeRow = { outcome: string; n: number };
+type DayRow = LatencyAnalytics["by_day"][number];
+type ProviderRow = LatencyAnalytics["by_provider"][number];
+type BenchRow = { key: string; metric: BenchmarkMetric };
 
 export default async function Analytics() {
   const [outcomes, latency, benchmarks] = await Promise.all([
@@ -19,139 +40,143 @@ export default async function Analytics() {
     getBenchmarks(30),
   ]);
 
-  const stats: [string, string][] = [
-    ["Calls (30d)", String(outcomes.calls)],
-    ["Qualification rate", pct(outcomes.qualification_rate)],
-    ["Booking rate", pct(outcomes.booking_rate)],
-    ["Transfer rate", pct(outcomes.transfer_rate)],
-    ["Abandonment", pct(outcomes.abandonment_rate)],
-    ["Consults booked", String(outcomes.consults_booked)],
+  const worstP95 = latency.by_day.length
+    ? Math.round(Math.max(...latency.by_day.map((d) => d.p95_ms)))
+    : null;
+
+  const outcomeColumns: Column<OutcomeRow>[] = [
+    { key: "outcome", header: "Outcome", render: (o) => <Pill tone="info">{o.outcome}</Pill> },
+    { key: "n", header: "Calls", align: "right" },
   ];
 
+  const dayColumns: Column<DayRow>[] = [
+    { key: "day", header: "Day" },
+    { key: "turns", header: "Turns", align: "right" },
+    { key: "p50_ms", header: "p50", align: "right", render: (d) => `${Math.round(d.p50_ms)} ms` },
+    {
+      key: "p95_ms",
+      header: "p95",
+      align: "right",
+      render: (d) => <SloPill p95={d.p95_ms} slo={latency.slo_ms} />,
+    },
+  ];
+
+  const providerColumns: Column<ProviderRow>[] = [
+    { key: "llm_provider", header: "LLM" },
+    { key: "tts_provider", header: "TTS" },
+    { key: "turns", header: "Turns", align: "right" },
+    {
+      key: "llm_ttft_p95_ms",
+      header: "LLM TTFT p95",
+      align: "right",
+      render: (p) => `${Math.round(p.llm_ttft_p95_ms)} ms`,
+    },
+    {
+      key: "tts_ttfb_p95_ms",
+      header: "TTS TTFB p95",
+      align: "right",
+      render: (p) => `${Math.round(p.tts_ttfb_p95_ms)} ms`,
+    },
+    {
+      key: "total_p95_ms",
+      header: "Total p95",
+      align: "right",
+      render: (p) => <SloPill p95={p.total_p95_ms} slo={latency.slo_ms} />,
+    },
+  ];
+
+  const benchColumns: Column<BenchRow>[] = [
+    { key: "label", header: "Metric", render: (r) => r.metric.label },
+    { key: "own", header: "Your firm", align: "right", render: (r) => r.metric.own ?? "—" },
+    { key: "p25", header: "Cohort p25", align: "right", render: (r) => r.metric.cohort?.p25 ?? "—" },
+    { key: "p50", header: "Cohort median", align: "right", render: (r) => r.metric.cohort?.p50 ?? "—" },
+    { key: "p75", header: "Cohort p75", align: "right", render: (r) => r.metric.cohort?.p75 ?? "—" },
+    {
+      key: "percentile",
+      header: "Your percentile",
+      align: "right",
+      render: (r) =>
+        r.metric.percentile_rank == null ? (
+          <Pill tone="muted">no data</Pill>
+        ) : (
+          <Pill tone={r.metric.percentile_rank >= 0.5 ? "ok" : "warn"}>
+            {Math.round(r.metric.percentile_rank * 100)}th
+          </Pill>
+        ),
+    },
+  ];
+
+  const benchRows: BenchRow[] = Object.entries(benchmarks.metrics).map(([key, metric]) => ({
+    key,
+    metric,
+  }));
+
   return (
-    <main>
-      <h1>Analytics</h1>
+    <>
+      <PageHeader
+        title="Analytics"
+        subtitle={`Intake funnel, answer speed, and peer benchmarks — last ${outcomes.days} days.`}
+      />
 
-      <h2>Intake funnel (last {outcomes.days} days)</h2>
-      <table>
-        <thead>
-          <tr>{stats.map(([label]) => <th key={label}>{label}</th>)}</tr>
-        </thead>
-        <tbody>
-          <tr>{stats.map(([label, value]) => <td key={label}>{value}</td>)}</tr>
-        </tbody>
-      </table>
+      <TileRow>
+        <PulseTile
+          label="Answer speed (p95)"
+          value={worstP95 ?? "—"}
+          unit={worstP95 != null ? "ms" : undefined}
+          status={worstP95 == null ? null : pulseStatus(worstP95, latency.slo_ms, { warnRatio: 650 / latency.slo_ms })}
+          hint={`${latency.slo_ms} ms SLO · worst of last ${latency.days}d`}
+        />
+        <StatTile label="Calls" value={outcomes.calls} footer={`last ${outcomes.days} days`} />
+        <StatTile label="Qualification rate" value={pct(outcomes.qualification_rate)} footer={`${outcomes.leads} leads`} />
+        <StatTile label="Booking rate" value={pct(outcomes.booking_rate)} footer={`${outcomes.consults_booked} booked`} />
+      </TileRow>
 
-      <h2>Call outcomes</h2>
-      {outcomes.outcomes.length === 0 ? (
-        <div className="empty">No calls yet.</div>
-      ) : (
-        <table>
-          <thead>
-            <tr><th>Outcome</th><th>Calls</th></tr>
-          </thead>
-          <tbody>
-            {outcomes.outcomes.map((o) => (
-              <tr key={o.outcome}>
-                <td><span className="pill">{o.outcome}</span></td>
-                <td>{o.n}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <Card title="Call outcomes" className="stackCard">
+        <DataTable
+          columns={outcomeColumns}
+          rows={outcomes.outcomes}
+          getRowKey={(o) => o.outcome}
+          empty={<EmptyState icon={BarChart3} title="No calls yet">Outcomes break down here as calls come in.</EmptyState>}
+        />
+      </Card>
 
-      <h2>Turn latency by day (last {latency.days} days, SLO {latency.slo_ms} ms p95)</h2>
-      {latency.by_day.length === 0 ? (
-        <div className="empty">No turn metrics yet.</div>
-      ) : (
-        <table>
-          <thead>
-            <tr><th>Day</th><th>Turns</th><th>p50</th><th>p95</th></tr>
-          </thead>
-          <tbody>
-            {latency.by_day.map((d) => (
-              <tr key={d.day}>
-                <td>{d.day}</td>
-                <td>{d.turns}</td>
-                <td>{Math.round(d.p50_ms)} ms</td>
-                <td><SloPill p95={d.p95_ms} slo={latency.slo_ms} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <Card
+        title="Turn latency by day"
+        actions={<Pill tone="muted">SLO {latency.slo_ms} ms p95</Pill>}
+        className="stackCard"
+      >
+        <DataTable
+          columns={dayColumns}
+          rows={latency.by_day}
+          getRowKey={(d) => d.day}
+          empty={<EmptyState icon={Gauge} title="No turn metrics yet">Answer-speed trends appear once calls are metered.</EmptyState>}
+        />
+      </Card>
 
-      <h2>Latency by provider</h2>
-      {latency.by_provider.length === 0 ? (
-        <div className="empty">No provider-tagged turns yet.</div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>LLM</th>
-              <th>TTS</th>
-              <th>Turns</th>
-              <th>LLM TTFT p95</th>
-              <th>TTS TTFB p95</th>
-              <th>Total p95</th>
-            </tr>
-          </thead>
-          <tbody>
-            {latency.by_provider.map((p) => (
-              <tr key={`${p.llm_provider}|${p.tts_provider}`}>
-                <td>{p.llm_provider}</td>
-                <td>{p.tts_provider}</td>
-                <td>{p.turns}</td>
-                <td>{Math.round(p.llm_ttft_p95_ms)} ms</td>
-                <td>{Math.round(p.tts_ttfb_p95_ms)} ms</td>
-                <td><SloPill p95={p.total_p95_ms} slo={latency.slo_ms} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <Card title="Latency by provider" className="stackCard">
+        <DataTable
+          columns={providerColumns}
+          rows={latency.by_provider}
+          getRowKey={(p) => `${p.llm_provider}|${p.tts_provider}`}
+          empty={<EmptyState icon={Gauge} title="No provider-tagged turns yet">Per-provider answer speed shows up here as turns are tagged.</EmptyState>}
+        />
+      </Card>
 
-      <h2>Peer benchmarks (last {benchmarks.days} days)</h2>
-      {benchmarks.suppressed ? (
-        <div className="empty">
-          {benchmarks.suppressed_reason ??
-            "Benchmarks unlock once enough peer firms are active."}
-        </div>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Metric</th>
-              <th>Your firm</th>
-              <th>Cohort p25</th>
-              <th>Cohort median</th>
-              <th>Cohort p75</th>
-              <th>Your percentile</th>
-            </tr>
-          </thead>
-          <tbody>
-            {Object.entries(benchmarks.metrics).map(([key, m]) => (
-              <tr key={key}>
-                <td>{m.label}</td>
-                <td>{m.own ?? "—"}</td>
-                <td>{m.cohort?.p25 ?? "—"}</td>
-                <td>{m.cohort?.p50 ?? "—"}</td>
-                <td>{m.cohort?.p75 ?? "—"}</td>
-                <td>
-                  {m.percentile_rank == null ? (
-                    <span className="pill muted">no data</span>
-                  ) : (
-                    <span className={`pill ${m.percentile_rank >= 0.5 ? "ok" : "warn"}`}>
-                      {Math.round(m.percentile_rank * 100)}th
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </main>
+      <Card title="Peer benchmarks" className="stackCard">
+        {benchmarks.suppressed ? (
+          <Notice tone="info" title="Benchmarks locked">
+            {benchmarks.suppressed_reason ??
+              "Benchmarks unlock once enough peer firms are active — this keeps every firm's numbers anonymous."}
+          </Notice>
+        ) : (
+          <DataTable
+            columns={benchColumns}
+            rows={benchRows}
+            getRowKey={(r) => r.key}
+            empty={<EmptyState icon={Users2} title="No benchmark metrics">Nothing to compare against your cohort yet.</EmptyState>}
+          />
+        )}
+      </Card>
+    </>
   );
 }

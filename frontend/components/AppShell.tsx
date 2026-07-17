@@ -1,13 +1,4 @@
 import type { ReactNode } from "react";
-import {
-  BarChart3,
-  Braces,
-  LayoutGrid,
-  MessagesSquare,
-  Share2,
-  SlidersHorizontal,
-  PencilRuler,
-} from "lucide-react";
 import NavItem from "./NavItem";
 import ThemeToggle from "./ThemeToggle";
 import styles from "./kit.module.css";
@@ -20,13 +11,13 @@ import styles from "./kit.module.css";
  * islands are <NavItem> (active-route) and <ThemeToggle>.
  */
 const NAV = [
-  { href: "/", label: "Overview", icon: LayoutGrid },
-  { href: "/threads", label: "Threads", icon: MessagesSquare },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/tuning", label: "Tuning", icon: SlidersHorizontal },
-  { href: "/referrals", label: "Referrals", icon: Share2 },
-  { href: "/studio", label: "Studio", icon: PencilRuler },
-  { href: "/config", label: "Config", icon: Braces },
+  { href: "/", label: "Overview", icon: "overview" },
+  { href: "/threads", label: "Threads", icon: "threads" },
+  { href: "/analytics", label: "Analytics", icon: "analytics" },
+  { href: "/tuning", label: "Tuning", icon: "tuning" },
+  { href: "/referrals", label: "Referrals", icon: "referrals" },
+  { href: "/studio", label: "Studio", icon: "studio" },
+  { href: "/config", label: "Config", icon: "config" },
 ] as const;
 
 export default function AppShell({ children }: { children: ReactNode }) {
