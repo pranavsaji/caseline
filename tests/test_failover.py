@@ -153,15 +153,20 @@ def test_active_label_follows_availability(monkeypatch):
     assert stack.active_label() == "anthropic:claude-haiku-4-5"
 
 
-def test_deepseek_is_the_default_llm_and_builds(monkeypatch):
-    # 2026-07-16: default switched anthropic -> deepseek on cost; deepseek
-    # rides the OpenAI-compatible plugin and auths via DEEPSEEK_API_KEY.
+def test_groq_primary_deepseek_failover_is_the_default_llm(monkeypatch):
+    # 2026-07-16: default is groq (measured median TTFT 376 ms on the voice
+    # SLO — deepseek's 748 ms failed it) with deepseek failover; both ride
+    # the OpenAI-compatible plugin (GROQ_API_KEY / DEEPSEEK_API_KEY).
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.delenv("CASELINE_LLM_PROVIDERS", raising=False)
-    assert providers.parse_specs("llm", None) == [("deepseek", "deepseek-chat")]
+    assert providers.parse_specs("llm", None) == [
+        ("groq", "llama-3.3-70b-versatile"),
+        ("deepseek", "deepseek-chat"),
+    ]
     stack = providers.build_llm()
-    assert stack.active_label() == "deepseek:deepseek-chat"
-    assert not isinstance(stack.adapter, lk_llm.FallbackAdapter)
+    assert isinstance(stack.adapter, lk_llm.FallbackAdapter)
+    assert stack.active_label() == "groq:llama-3.3-70b-versatile"
 
 
 def test_deepseek_stacks_with_anthropic_failover(monkeypatch):

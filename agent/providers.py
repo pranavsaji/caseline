@@ -10,7 +10,7 @@ turn, and the primary is probed in the background until it recovers.
 Env (single-entry lists mean "no failover", the Phase 0/1 behavior):
 
   CASELINE_STT_PROVIDERS=deepgram:nova-3[,openai:whisper-1]
-  CASELINE_LLM_PROVIDERS=deepseek:deepseek-chat[,anthropic:claude-haiku-4-5]
+  CASELINE_LLM_PROVIDERS=groq:llama-3.3-70b-versatile[,deepseek:deepseek-chat]
   CASELINE_TTS_PROVIDERS=cartesia:sonic-3[,openai:tts-1]
 
 Provider names appear here and in config only (cross-phase rule). The
@@ -28,12 +28,12 @@ logger = logging.getLogger("caseline.agent.providers")
 
 DEFAULTS = {
     "stt": "deepgram:nova-3",
-    # 2026-07-16: default LLM switched anthropic -> deepseek on cost.
-    # deepseek-chat is OpenAI-compatible (DEEPSEEK_API_KEY). TTFT must be
-    # re-verified against the 800 ms turn budget on real calls — turn metrics
-    # slice latency by provider, and anthropic stays one env entry away as
-    # primary or failover.
-    "llm": "deepseek:deepseek-chat",
+    # 2026-07-16: voice LLM default is groq (measured median TTFT 376 ms —
+    # fits the 800 ms turn SLO; deepseek's 748 ms did not) with deepseek as
+    # failover. Both are OpenAI-compatible endpoints, keys via
+    # GROQ_API_KEY / DEEPSEEK_API_KEY. Re-verify on real calls — turn metrics
+    # slice latency by provider; anthropic stays one env entry away.
+    "llm": "groq:llama-3.3-70b-versatile,deepseek:deepseek-chat",
     "tts": "cartesia:sonic-3",
 }
 
@@ -134,7 +134,13 @@ def _build_llm(provider: str, model: str) -> object:
     if provider == "groq":
         from livekit.plugins import openai
 
-        return openai.LLM.with_groq(model=model or "llama-3.3-70b-versatile")
+        # OpenAI-compatible endpoint (the installed plugin version has no
+        # with_groq helper); auths via GROQ_API_KEY.
+        return openai.LLM(
+            model=model or "llama-3.3-70b-versatile",
+            base_url="https://api.groq.com/openai/v1",
+            api_key=os.getenv("GROQ_API_KEY"),
+        )
     raise ValueError(f"Unknown LLM provider {provider!r}")
 
 
