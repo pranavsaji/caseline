@@ -6,31 +6,33 @@
    keep existing pages coherent until Phase 2 component migration.
    ========================================================================= */
 
-/* ---- Slate Light (default) --------------------------------------------- */
+/* ---- Blue & White (default) -------------------------------------------- */
 :root {
-  /* Neomorphic surfaces */
-  --surface: #e4e9f2;
-  --surface-raised: #edf1f9;
-  --surface-sunken: #dbe1ec;
-  --shadow-dark: #c3cad9;
+  /* Neomorphic surfaces — a cool near-white base so the app reads "white",
+     with blue-tinted shadows so the soft extrusion stays visible (a pure
+     #fff base would erase the highlight and flatten the material). */
+  --surface: #eef3fc;
+  --surface-raised: #f8faff;
+  --surface-sunken: #e2e9f7;
+  --shadow-dark: #ccd7ee;
   --shadow-light: #ffffff;
 
   /* Text */
-  --text: #26303e;
-  --muted: #5c6879;
+  --text: #1c2836;
+  --muted: #556274;
 
-  /* Accent (darkened from #3b6ef5 so on-accent white text clears AA 4.5:1
-     on the primary button — the Phase 3 contrast gate). */
-  --accent: #3363e6;
-  --accent-deep: #2551c6;
-  --accent-hover: #2551c6;
+  /* Accent — vivid blue. Kept dark enough that on-accent white text clears
+     AA 4.5:1 on the primary button (5.17:1 — the Phase 3 contrast gate). */
+  --accent: #2563eb;
+  --accent-deep: #1d4ed8;
+  --accent-hover: #1d4ed8;
   --on-accent: #ffffff;
 
   /* Semantic status FILLS (solid pill/notice/glow surfaces — never text). */
   --ok: #1f9d6b;
   --warn: #c9871f;
   --bad: #d0453f;
-  --info: #3b6ef5;
+  --info: #2563eb;
 
   /* Semantic INK — the same hues darkened to clear AA 4.5:1 as *foreground
      text* on soft surfaces and on their own tinted pill backgrounds. Pills,
@@ -39,13 +41,13 @@
   --ok-ink: #156b49;
   --warn-ink: #815614;
   --bad-ink: #a23631;
-  --info-ink: #2d54ba;
-  --muted-ink: #535e6d;
+  --info-ink: #2551c6;
+  --muted-ink: #4f5c6c;
 
   /* Backward-compat aliases for pre-redesign pages */
   --bg: var(--surface);
   --panel: var(--surface-raised);
-  --border: #ccd3e0;
+  --border: #d5deee;
 
   /* Neomorphic material tokens */
   --nm-dist: 6px;
@@ -105,33 +107,9 @@
   color-scheme: dark;
 }
 
-/* Honor OS preference when the user hasn't explicitly chosen a theme. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    --surface: #1e222b;
-    --surface-raised: #242a35;
-    --surface-sunken: #191d25;
-    --shadow-dark: #141820;
-    --shadow-light: #2c3340;
-    --text: #e7ecf5;
-    --muted: #96a0b5;
-    --accent: #5b8def;
-    --accent-deep: #3f6bd0;
-    --accent-hover: #7aa4f4;
-    --on-accent: #0f1320;
-    --ok: #3fb27f;
-    --warn: #e0a03d;
-    --bad: #e05d5d;
-    --info: #5b8def;
-    --ok-ink: #3fb27f;
-    --warn-ink: #e0a03d;
-    --bad-ink: #e57777;
-    --info-ink: #6f9bf1;
-    --muted-ink: #96a0b5;
-    --border: #313846;
-    color-scheme: dark;
-  }
-}
+/* The Blue & White theme is the default look; Graphite Dark is opt-in via the
+   theme toggle (persisted to localStorage). We intentionally do NOT auto-apply
+   dark from prefers-color-scheme — the product's signature surface is white. */
 
 /* =========================================================================
    Base

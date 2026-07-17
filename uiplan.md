@@ -32,19 +32,20 @@ Pure neomorphism (foreground = background color, shape defined only by shadow) f
 
 ## 2. Palette
 
-Neomorphism needs a **mid-tone base** (not pure black, not pure white) so both the light and dark shadow of each element are visible. We ship **two themes**; default is **Slate Light** (best neomorphic legibility), with a **Graphite Dark** for night use. Theme is user-toggle + `prefers-color-scheme`, persisted to `localStorage`.
+Neomorphism needs a base that is **not pure white** so both the light and dark shadow of each element stay visible. We ship **two themes**; default is **Blue & White** — a cool near-white base with vivid blue accents and blue-tinted shadows (reads "white" without erasing the soft material) — plus a **Graphite Dark** for night use. Default is now **always Blue & White** (we intentionally no longer auto-apply `prefers-color-scheme: dark` — the product's signature surface is white); Graphite Dark is opt-in via the toggle, persisted to `localStorage`.
 
-### Slate Light (default)
+### Blue & White (default) — _(retuned 2026-07-16; was "Slate Light")_
 | Token | Hex | Role |
 |---|---|---|
-| `--surface` | `#E4E9F2` | Page + card base (the "clay") |
-| `--surface-raised` | `#EDF1F9` | Slightly lifted card fill |
-| `--shadow-dark` | `#C3CAD9` | Bottom-right cast shadow |
+| `--surface` | `#EEF3FC` | Page + card base (cool near-white) |
+| `--surface-raised` | `#F8FAFF` | Slightly lifted card fill (near pure white) |
+| `--surface-sunken` | `#E2E9F7` | Inset well fill |
+| `--shadow-dark` | `#CCD7EE` | Bottom-right cast shadow (blue-tinted) |
 | `--shadow-light` | `#FFFFFF` | Top-left highlight |
-| `--text` | `#26303E` | Primary text (≈ 11:1 on surface) |
-| `--muted` | `#5C6879` | Secondary text (≈ 4.7:1) |
-| `--accent` | `#3B6EF5` | Primary action / links / focus |
-| `--accent-deep` | `#2551C6` | Pressed accent |
+| `--text` | `#1C2836` | Primary text (≈ 13.4:1 on surface) |
+| `--muted` | `#556274` | Secondary text (≈ 5.6:1) |
+| `--accent` | `#2563EB` | Primary action / links / focus (white text on it = 5.17:1) |
+| `--accent-deep` / `--accent-hover` | `#1D4ED8` | Pressed / hover accent |
 
 ### Graphite Dark
 | Token | Hex | Role |

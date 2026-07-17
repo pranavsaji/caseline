@@ -7,11 +7,6 @@ type Theme = "light" | "dark";
 
 const STORAGE_KEY = "caseline-theme";
 
-function systemTheme(): Theme {
-  if (typeof window === "undefined") return "light";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
 /**
  * Soft theme switch. Reads the theme the pre-hydration script already applied
  * to <html data-theme>, so there is no flash and no mismatch on first paint.
@@ -21,8 +16,10 @@ export default function ThemeToggle() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    // No data-theme attribute means no stored preference → the CSS default,
+    // which is now the Blue & White (light) theme regardless of OS setting.
     const stored = document.documentElement.getAttribute("data-theme") as Theme | null;
-    setTheme(stored ?? systemTheme());
+    setTheme(stored ?? "light");
     setMounted(true);
   }, []);
 
