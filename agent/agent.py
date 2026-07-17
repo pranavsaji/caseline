@@ -35,6 +35,7 @@ from livekit.agents import (
     WorkerOptions,
     cli,
     function_tool,
+    get_job_context,
     metrics,
 )
 from livekit.plugins import silero
@@ -76,6 +77,15 @@ DEFAULT_GREETING = (
 )
 
 
+CLOSING_INSTRUCTION = (
+    "ENDING THE CALL: when the caller confirms they have nothing more, wrap up "
+    "in this order — make sure you've called write_to_cms, give a short warm "
+    "goodbye (one sentence), and then call end_call to hang up. Do not stay on "
+    "the line after saying goodbye, and never call end_call before you've said "
+    "it."
+)
+
+
 def _current_time_line(timezone: str | None) -> str:
     """A system-prompt line anchoring the model to the real current date/time
     in the firm's timezone, so relative dates ("today", "a few hours ago")
@@ -105,6 +115,7 @@ class IntakeAgent(Agent):
         # to the real current date in the firm's timezone so it can resolve
         # "today" / "a few hours ago" / "last week" into a correct ISO date.
         instructions = f"{instructions}\n\n{_current_time_line(config.get('timezone'))}"
+        instructions = f"{instructions}\n\n{CLOSING_INSTRUCTION}"
         super().__init__(instructions=instructions)
         self._backend = backend
         self._call_id = call_id
@@ -295,6 +306,29 @@ class IntakeAgent(Agent):
         result = await self._backend.write_to_cms(self._call_id, summary, facts)
         logger.info("write_to_cms -> %s", result)
         return result["status"]
+
+    @function_tool
+    async def end_call(self) -> str:
+        """Hang up and end the call. Call this once the conversation is truly
+        finished — after you have written to the CMS, said a brief goodbye, and
+        the caller has nothing more. Say your closing line BEFORE calling this;
+        it waits for that line to finish playing, then disconnects both sides."""
+        logger.info("end_call requested for %s", self._call_id)
+        # Let the closing line finish before dropping the connection, otherwise
+        # the caller hears the goodbye get cut off.
+        try:
+            speech = self.session.current_speech
+            if speech is not None:
+                await speech.wait_for_playout()
+        except Exception:  # never let a teardown detail keep the call alive
+            logger.debug("end_call: could not await final speech", exc_info=True)
+        # Deleting the room disconnects every participant (caller + agent) and
+        # triggers the job shutdown callback (transcript flush, CMS drain).
+        try:
+            get_job_context().delete_room()
+        except Exception as exc:
+            logger.warning("end_call: room delete failed: %s", exc)
+        return "call ended"
 
 
 async def _try_sip_transfer(room_name: str, target: str) -> None:
