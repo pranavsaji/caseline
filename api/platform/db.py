@@ -17,11 +17,13 @@ filename order and tracked in ``schema_migrations``.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -32,10 +34,18 @@ APP_ROLE = "caseline_app"
 
 
 def _app_dsn(admin_dsn: str) -> str:
-    """Derive the RLS-enforced DSN by swapping the user onto the app role."""
+    """Derive the RLS-enforced DSN by swapping the user onto the app role.
+
+    Auth for the app role varies by environment: trust/peer locally, IAM on
+    GCP, and password auth on managed Postgres (Railway, RDS, ...) — set
+    CASELINE_APP_DB_PASSWORD there; migrate() assigns it to the role."""
     info = psycopg.conninfo.conninfo_to_dict(admin_dsn)
     info["user"] = APP_ROLE
-    info.pop("password", None)  # app role auth is trust/peer locally, IAM in GCP
+    app_password = os.getenv("CASELINE_APP_DB_PASSWORD")
+    if app_password:
+        info["password"] = app_password
+    else:
+        info.pop("password", None)
     return psycopg.conninfo.make_conninfo(**info)
 
 
@@ -72,6 +82,15 @@ class Database:
                 conn.execute(path.read_text())
                 conn.execute("INSERT INTO schema_migrations (name) VALUES (%s)", (path.name,))
                 applied.append(path.name)
+            # Managed Postgres has no trust/peer auth: give the app role its
+            # password (idempotent; re-running rotates it to the env value).
+            app_password = os.getenv("CASELINE_APP_DB_PASSWORD")
+            if app_password:
+                conn.execute(
+                    sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                        sql.Identifier(APP_ROLE), sql.Literal(app_password)
+                    )
+                )
         return applied
 
     def close(self) -> None:

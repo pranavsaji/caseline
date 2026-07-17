@@ -1,0 +1,18 @@
+# Never bake secrets or local state into the image
+.env
+.env.*
+credentials.json
+token.json
+caseline.db
+*.db
+
+# Local/dev artifacts
+.venv/
+.tmp/
+.git/
+.pytest_cache/
+__pycache__/
+frontend/node_modules/
+frontend/.next/
+frontend/.vercel/
+.vercel/

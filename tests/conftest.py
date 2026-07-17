@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 # falsy for every make_* factory). CASELINE_TEST_ADMIN_DSN stays honored.
 for _var in (
     "CASELINE_DATABASE_URL",
+    "CASELINE_APP_DB_PASSWORD",
     "CASELINE_REDIS_URL",
     "CASELINE_FIRM_TOKEN",
     "CASELINE_ADMIN_TOKEN",
