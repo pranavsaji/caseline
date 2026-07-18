@@ -521,6 +521,30 @@ class ThreadEngine:
         self._cancel_followups(conn, thread_id)
         platform_events.emit(conn, firm_id, "thread.closed", {"thread_id": thread_id, "reason": reason})
 
+    def send_manual_message(self, firm_id: str, thread_id: str, body: str) -> dict:
+        """Staff-triggered outbound follow-up on an open thread. Same guardrail
+        screen and outbound bookkeeping as an automated send; a manual reach-out
+        disarms any pending no-reply nudge so the client isn't double-contacted."""
+        config = self._config(firm_id)
+        if config is None:
+            raise RuntimeError("firm has no configured agent")
+        with self.db.firm(firm_id) as conn:
+            thread = conn.execute(
+                "SELECT id, channel, address, status FROM threads WHERE id = %s",
+                (thread_id,),
+            ).fetchone()
+            if thread is None:
+                raise KeyError("thread not found")
+            if thread["status"] != "open":
+                raise RuntimeError("thread is closed")
+            self._deliver(config, thread["channel"], thread["address"], body)
+            self._record_outbound(conn, firm_id, thread_id, thread["channel"], body)
+            self._cancel_followups(conn, thread_id, "chaser.nudge")
+            platform_events.emit(
+                conn, firm_id, "thread.manual_message", {"thread_id": thread_id}
+            )
+        return {"status": "sent", "thread_id": thread_id}
+
     # --- starting threads ---
 
     def start_intake_thread(

@@ -163,7 +163,7 @@ def test_claude_primary_deepseek_failover_is_the_default_llm(monkeypatch):
     monkeypatch.delenv("CASELINE_LLM_PROVIDERS", raising=False)
     assert providers.parse_specs("llm", None) == [
         ("anthropic", "claude-haiku-4-5"),
-        ("deepseek", "deepseek-chat"),
+        ("deepseek", "deepseek-v4-flash"),
     ]
     stack = providers.build_llm()
     assert isinstance(stack.adapter, lk_llm.FallbackAdapter)
@@ -177,7 +177,7 @@ def test_missing_key_provider_is_skipped(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.delenv("CASELINE_LLM_PROVIDERS", raising=False)
     stack = providers.build_llm()
-    assert stack.active_label() == "deepseek:deepseek-chat"
+    assert stack.active_label() == "deepseek:deepseek-v4-flash"
 
 
 def test_deepseek_stacks_with_anthropic_failover(monkeypatch):

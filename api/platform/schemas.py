@@ -5,6 +5,14 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, model_validator
 
 
+# --- dashboard operator accounts (human sign up / log in) ---
+
+
+class DashboardCredentials(BaseModel):
+    email: str
+    password: str
+
+
 # --- admin / onboarding ---
 
 
@@ -46,6 +54,7 @@ class AgentConfigUpdate(BaseModel):
     qualification_rules: dict | None = None
     guardrails: dict | None = None
     voice_id: str | None = None
+    llm_config: dict | None = None
 
 
 # --- tools ---
@@ -213,7 +222,18 @@ class VoiceProfileCreate(BaseModel):
 
 
 class AssignVoiceRequest(BaseModel):
-    voice_profile_id: str
+    """Point the agent at a voice. Either a ready cloned profile
+    (``voice_profile_id``) or a provider preset/library voice id
+    (``voice_id``, a UUID). Exactly one is required."""
+
+    voice_profile_id: str | None = None
+    voice_id: str | None = None
+
+    @model_validator(mode="after")
+    def _require_one(self) -> "AssignVoiceRequest":
+        if not self.voice_profile_id and not self.voice_id:
+            raise ValueError("provide voice_profile_id (cloned) or voice_id (preset)")
+        return self
 
 
 class LeadReviewRequest(BaseModel):

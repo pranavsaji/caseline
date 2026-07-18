@@ -22,6 +22,9 @@ for _var in (
     "TWILIO_FROM_NUMBER",
     "CASELINE_SMTP_HOST",
     "CASELINE_PUBSUB_TOPIC",
+    # Voice cloning: keep tests on MockVoiceCloneProvider even when a dev .env
+    # points at real Cartesia — otherwise clone tests make live HTTP calls.
+    "CASELINE_VOICE_CLONE_PROVIDER",
 ):
     os.environ[_var] = ""
 

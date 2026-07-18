@@ -9,6 +9,7 @@ import Card from "@/components/Card";
 import DataTable, { type Column } from "@/components/DataTable";
 import Pill, { type PillTone } from "@/components/Pill";
 import EmptyState from "@/components/EmptyState";
+import TrackerEnroll from "@/components/TrackerEnroll";
 
 export const dynamic = "force-dynamic";
 
@@ -100,6 +101,18 @@ export default async function ThreadsPage() {
             </EmptyState>
           }
         />
+      </Card>
+
+      <Card
+        title="Enroll in treatment tracker"
+        className="stackCard"
+      >
+        <p style={{ margin: "0 0 14px", color: "var(--muted)", fontSize: 14 }}>
+          Enroll a signed client for automated check-ins. Consent rides on the
+          representation agreement; a STOP reply always opts them out. Enrolled
+          clients open a thread above with goal “treatment tracker”.
+        </p>
+        <TrackerEnroll />
       </Card>
     </>
   );

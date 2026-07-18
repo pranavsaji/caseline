@@ -20,6 +20,8 @@ import Toggle from "@/components/Toggle";
 import Pill from "@/components/Pill";
 import Notice from "@/components/Notice";
 import TranscriptTurn, { TranscriptList } from "@/components/TranscriptTurn";
+import VoiceManager from "@/components/VoiceManager";
+import ModelManager from "@/components/ModelManager";
 
 type Sections = {
   script: Record<string, unknown>;
@@ -282,6 +284,10 @@ export default function StudioPage() {
           </div>
         )}
       </Card>
+
+      <ModelManager />
+
+      <VoiceManager />
     </>
   );
 }

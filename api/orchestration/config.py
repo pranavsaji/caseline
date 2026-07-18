@@ -81,6 +81,15 @@ class GuardrailSettings(BaseModel):
     )
 
 
+class LLMConfig(BaseModel):
+    """Which LLM the firm's calls/threads run on. ``providers`` is a
+    ``provider:model`` spec — the same comma-separated primary+failover format
+    the worker env (CASELINE_LLM_PROVIDERS) uses — so the value flows straight
+    into ``providers.build_llm(raw=...)``. Empty means "use the worker default"."""
+
+    providers: str = ""
+
+
 class AgentConfig(BaseModel):
     firm_id: str
     agent_id: str
@@ -94,6 +103,7 @@ class AgentConfig(BaseModel):
     qualification: QualificationRules = Field(default_factory=QualificationRules)
     routing: RoutingRules = Field(default_factory=RoutingRules)
     guardrails: GuardrailSettings = Field(default_factory=GuardrailSettings)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
 
     def instructions(self) -> str:
         """Compile the runtime system prompt from the firm's script config."""
@@ -136,7 +146,7 @@ def load_agent_config(
         row = conn.execute(
             "SELECT a.id AS agent_id, a.name AS agent_name, a.role, a.voice_id,"
             "       a.script_config, a.routing_rules, a.qualification_rules, a.guardrails,"
-            "       f.name AS firm_name, f.timezone, f.business_hours"
+            "       a.llm_config, f.name AS firm_name, f.timezone, f.business_hours"
             " FROM agents a JOIN firms f ON f.id = a.firm_id"
             " WHERE a.firm_id = %s AND a.role = %s ORDER BY a.created_at LIMIT 1",
             (firm_id, role),
@@ -156,6 +166,7 @@ def load_agent_config(
         qualification=QualificationRules.model_validate(row["qualification_rules"] or {}),
         routing=RoutingRules.model_validate(row["routing_rules"] or {}),
         guardrails=GuardrailSettings.model_validate(row["guardrails"] or {}),
+        llm=LLMConfig.model_validate(row["llm_config"] or {}),
     )
     store.set(_cache_key(firm_id, role), config.model_dump(), ttl_seconds=CONFIG_CACHE_TTL_SECONDS)
     return config
@@ -176,6 +187,7 @@ def update_agent_config(
     qualification_rules: dict | None = None,
     guardrails: dict | None = None,
     voice_id: str | None = None,
+    llm_config: dict | None = None,
 ) -> bool:
     """Validated partial update of an agent's jsonb config. Returns False if
     the agent does not belong to the firm (RLS makes it invisible)."""
@@ -188,6 +200,8 @@ def update_agent_config(
         QualificationRules.model_validate(qualification_rules)
     if guardrails is not None:
         GuardrailSettings.model_validate(guardrails)
+    if llm_config is not None:
+        LLMConfig.model_validate(llm_config)
 
     sets, params = ["updated_at = now()"], []
     for column, value in (
@@ -195,6 +209,7 @@ def update_agent_config(
         ("routing_rules", routing_rules),
         ("qualification_rules", qualification_rules),
         ("guardrails", guardrails),
+        ("llm_config", llm_config),
     ):
         if value is not None:
             sets.append(f"{column} = %s")

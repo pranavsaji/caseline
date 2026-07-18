@@ -64,13 +64,14 @@ def _cartesia_http_session():
 DEFAULTS = {
     "stt": "deepgram:nova-3",
     # 2026-07-17: voice LLM default is Claude Haiku 4.5 — the most natural
-    # conversationalist of the fast models and a reliable native tool-caller —
-    # with deepseek as failover (also solid at tools). groq's llama-3.3-70b was
-    # dropped from the default: it frequently emitted tool calls as literal text
-    # ("<function=...>") that leaked to callers and often didn't execute.
-    # FunctionCallStripper still guards every model against that leak. Keys via
-    # ANTHROPIC_API_KEY / DEEPSEEK_API_KEY.
-    "llm": "anthropic:claude-haiku-4-5,deepseek:deepseek-chat",
+    # conversationalist of the fast tier and a reliable native tool-caller —
+    # with DeepSeek V4 Flash as failover (fast, cheap, solid at tools; the old
+    # deepseek-chat alias EOLs 2026-07-24). Both are the low-latency "flash/mini"
+    # tier, not the flagships — the right speed/cost/quality balance for live
+    # calls. groq's llama-3.3-70b was dropped: it leaked tool calls as literal
+    # text ("<function=...>"). FunctionCallStripper still guards every model.
+    # Keys via ANTHROPIC_API_KEY / DEEPSEEK_API_KEY.
+    "llm": "anthropic:claude-haiku-4-5,deepseek:deepseek-v4-flash",
     "tts": "cartesia:sonic-3",
 }
 
@@ -154,31 +155,161 @@ def _build_stt(provider: str, model: str) -> object:
     raise ValueError(f"Unknown STT provider {provider!r}")
 
 
-def _build_llm(provider: str, model: str) -> object:
-    if provider == "deepseek":
-        from livekit.plugins import openai
+# The LLM provider catalog. Every entry is (env key, default model, connector).
+# The connector tells _build_llm how to construct the client:
+#   * "anthropic" / "openai" -> the native LiveKit plugin
+#   * "with_*"                -> the openai plugin's built-in helper for that
+#                               vendor (reads its own standard env var)
+#   * a URL string           -> an OpenAI-compatible endpoint at that base_url,
+#                               authed with the env key above
+# Adding a provider is just a row here plus its key in .env — no other code.
+# Aliases (e.g. "gemini" -> google, "grok" -> xai) are folded in below.
+# Defaults verified current as of 2026-07-17. Retired IDs replaced: gemini
+# 2.0->flash-latest, deepseek-chat->v4-flash (old alias EOL 2026-07-24), groq
+# llama-3.3 (deprecated)->gpt-oss-20b, grok-3-mini (retired)->grok-4.1-fast,
+# cerebras llama-3.3-70b (retired)->gpt-oss-120b.
+_LLM_REGISTRY: dict[str, tuple[str, str, str]] = {
+    "anthropic": ("ANTHROPIC_API_KEY", "claude-haiku-4-5", "anthropic"),
+    "openai": ("OPENAI_API_KEY", "gpt-5.4-mini", "openai"),
+    "google": (
+        "GEMINI_API_KEY",
+        "gemini-flash-latest",
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
+    "deepseek": ("DEEPSEEK_API_KEY", "deepseek-v4-flash", "with_deepseek"),
+    "groq": ("GROQ_API_KEY", "openai/gpt-oss-20b", "https://api.groq.com/openai/v1"),
+    "xai": ("XAI_API_KEY", "grok-4.1-fast", "with_x_ai"),
+    "mistral": ("MISTRAL_API_KEY", "mistral-small-latest", "https://api.mistral.ai/v1"),
+    "together": (
+        "TOGETHER_API_KEY",
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "with_together",
+    ),
+    "fireworks": (
+        "FIREWORKS_API_KEY",
+        "accounts/fireworks/models/gpt-oss-120b",
+        "with_fireworks",
+    ),
+    "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-5.4-mini", "with_openrouter"),
+    "perplexity": ("PERPLEXITY_API_KEY", "sonar", "with_perplexity"),
+    "cerebras": ("CEREBRAS_API_KEY", "gpt-oss-120b", "with_cerebras"),
+    "ollama": ("", "llama3.1", "with_ollama"),
+}
+# Friendly aliases callers may type in a spec or the UI.
+_LLM_ALIASES = {"gemini": "google", "grok": "xai", "x-ai": "xai"}
 
-        # OpenAI-compatible endpoint; auths via DEEPSEEK_API_KEY.
-        return openai.LLM.with_deepseek(model=model or "deepseek-chat")
-    if provider == "anthropic":
+# Human labels + curated model suggestions for the config UI. Not exhaustive —
+# the UI also accepts a free-text model id — kept next to _LLM_REGISTRY so all
+# provider knowledge lives in one file.
+_LLM_LABELS = {
+    "anthropic": "Anthropic (Claude)",
+    "openai": "OpenAI",
+    "google": "Google Gemini",
+    "deepseek": "DeepSeek",
+    "groq": "Groq",
+    "xai": "xAI (Grok)",
+    "mistral": "Mistral",
+    "together": "Together AI",
+    "fireworks": "Fireworks",
+    "openrouter": "OpenRouter",
+    "perplexity": "Perplexity",
+    "cerebras": "Cerebras",
+    "ollama": "Ollama (local)",
+}
+_LLM_MODEL_SUGGESTIONS = {
+    "anthropic": ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"],
+    # GPT-5.4 mini/nano are the fast, cost-optimized voice-agent picks;
+    # gpt-5.4 / gpt-5.5 sit above them, gpt-4.1* remain for legacy pins.
+    "openai": [
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.4",
+        "gpt-5.5",
+        "gpt-4.1-mini",
+        "gpt-4.1",
+    ],
+    "google": [
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro",
+    ],
+    "deepseek": ["deepseek-v4-flash", "deepseek-v4-pro"],
+    "groq": ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.6-27b"],
+    "xai": ["grok-4.1-fast", "grok-4.5", "grok-4.3"],
+    "mistral": ["mistral-small-latest", "mistral-large-latest", "magistral-medium-latest"],
+    "together": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen3.5-9B"],
+    "fireworks": [
+        "accounts/fireworks/models/gpt-oss-120b",
+        "accounts/fireworks/models/deepseek-v3p2",
+    ],
+    "openrouter": [
+        "openai/gpt-5.4-mini",
+        "anthropic/claude-haiku-4-5",
+        "google/gemini-3.5-flash",
+        "deepseek/deepseek-v4-flash",
+    ],
+    "perplexity": ["sonar", "sonar-pro", "sonar-reasoning"],
+    "cerebras": ["gpt-oss-120b", "zai-glm-4.7", "llama-4-scout"],
+    "ollama": ["llama3.1", "qwen2.5"],
+}
+
+
+def llm_catalog() -> list[dict]:
+    """Provider catalog for the config UI: label, env key, whether that key is
+    present in this process's env, and default + suggested models. Safe to call
+    from the API (no livekit import)."""
+    catalog = []
+    for provider, (key_env, default_model, _connector) in _LLM_REGISTRY.items():
+        catalog.append(
+            {
+                "provider": provider,
+                "label": _LLM_LABELS.get(provider, provider),
+                "env_key": key_env or None,
+                "key_present": (not key_env) or bool(os.getenv(key_env)),
+                "default_model": default_model,
+                "models": _LLM_MODEL_SUGGESTIONS.get(provider, [default_model]),
+            }
+        )
+    return catalog
+
+
+def _llm_entry(provider: str) -> tuple[str, str, str] | None:
+    provider = _LLM_ALIASES.get(provider, provider)
+    return _LLM_REGISTRY.get(provider)
+
+
+def _build_llm(provider: str, model: str) -> object:
+    provider = _LLM_ALIASES.get(provider.lower(), provider.lower())
+    entry = _LLM_REGISTRY.get(provider)
+    if entry is None:
+        raise ValueError(f"Unknown LLM provider {provider!r}")
+    key_env, default_model, connector = entry
+    model = model or default_model
+
+    if connector == "anthropic":
         from livekit.plugins import anthropic
 
-        return anthropic.LLM(model=model or "claude-haiku-4-5")
-    if provider == "openai":
-        from livekit.plugins import openai
+        # Prompt caching is the single biggest per-turn latency lever here: the
+        # system prompt (five concatenated blocks) and all nine tool schemas are
+        # a large, *stable* prefix that Claude would otherwise re-process on every
+        # turn. caching="ephemeral" marks that prefix cached, so every turn after
+        # the first reads it from cache instead of re-encoding it — a big cut to
+        # LLM TTFT with zero change to the model or its output. Spoken replies are
+        # short, so cap max_tokens to bound worst-case generation too.
+        return anthropic.LLM(model=model, caching="ephemeral", max_tokens=1024)
 
-        return openai.LLM(model=model or "gpt-4.1-mini")
-    if provider == "groq":
-        from livekit.plugins import openai
+    from livekit.plugins import openai
 
-        # OpenAI-compatible endpoint (the installed plugin version has no
-        # with_groq helper); auths via GROQ_API_KEY.
-        return openai.LLM(
-            model=model or "llama-3.3-70b-versatile",
-            base_url="https://api.groq.com/openai/v1",
-            api_key=os.getenv("GROQ_API_KEY"),
-        )
-    raise ValueError(f"Unknown LLM provider {provider!r}")
+    if connector == "openai":
+        return openai.LLM(model=model)
+    if connector.startswith("http"):
+        # OpenAI-compatible endpoint (Gemini, Groq, Mistral, …): a base_url plus
+        # the vendor's key. Covers any provider that exposes an /v1/chat shim.
+        return openai.LLM(model=model, base_url=connector, api_key=os.getenv(key_env))
+    # An openai-plugin helper (with_deepseek, with_x_ai, with_together, …). Each
+    # reads its own standard env var and points at the right base_url.
+    return getattr(openai.LLM, connector)(model=model)
 
 
 def _build_tts(provider: str, model: str, voice_id: str | None) -> object:
@@ -240,7 +371,16 @@ def _build_tts(provider: str, model: str, voice_id: str | None) -> object:
             voice=voice,
             http_session=_cartesia_http_session(),
         )
-        return lk_tts.StreamAdapter(tts=base)
+        # TTS TTFB (time to first audio) is bounded by how much text the adapter
+        # buffers before it synthesizes: the bytes path returns audio for a whole
+        # segment at once, so a long first sentence means a long silence. Flush
+        # the first speakable chunk sooner (shorter min sentence length) so the
+        # caller hears the opening words while the rest is still synthesizing —
+        # this trims first-audio latency without touching the model or voice.
+        from livekit.agents import tokenize
+
+        fast_tokenizer = tokenize.basic.SentenceTokenizer(min_sentence_len=8)
+        return lk_tts.StreamAdapter(tts=base, sentence_tokenizer=fast_tokenizer)
     if provider == "openai":
         from livekit.plugins import openai
 
@@ -279,22 +419,16 @@ def build_stt(raw: str | None = None) -> ProviderStack:
     )
 
 
-# The env var each LLM provider needs; a spec whose key is absent is skipped so
-# a not-yet-configured primary (e.g. anthropic before the key is added) degrades
-# to the next provider instead of crashing the worker on every call.
-_LLM_KEY_ENV = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "groq": "GROQ_API_KEY",
-}
-
-
 def build_llm(raw: str | None = None) -> ProviderStack:
+    # A spec whose key is absent is skipped so a not-yet-configured primary
+    # (e.g. anthropic before the key is added) degrades to the next provider
+    # instead of crashing the worker on every call. Provider->key mapping and
+    # aliases come from _LLM_REGISTRY (single source of truth).
     specs = parse_specs("llm", raw)
     usable = []
     for p, m in specs:
-        key_env = _LLM_KEY_ENV.get(p)
+        entry = _llm_entry(p)
+        key_env = entry[0] if entry else None
         if key_env and not os.getenv(key_env):
             logger.warning("llm provider %s skipped: %s not set", p, key_env)
             continue

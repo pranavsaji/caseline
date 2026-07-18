@@ -33,6 +33,7 @@ from api.orchestration.config import (
 from api.orchestration.threads import ThreadEngine, preview_conversation
 from api.platform import alerts as platform_alerts
 from api.platform import auth
+from api.platform import dashboard_auth
 from api.platform import events as platform_events
 from api.platform.schemas import (
     AgentConfigUpdate,
@@ -43,6 +44,7 @@ from api.platform.schemas import (
     CreateFirmResponse,
     CreateTokenRequest,
     CreateTokenResponse,
+    DashboardCredentials,
     DialRequest,
     InboundSMSRequest,
     LeadReviewRequest,
@@ -204,6 +206,31 @@ def put_agent_config(
     if not updated:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"status": "updated"}
+
+
+# ---------------------------------------------------------------------------
+# Dashboard operator accounts (human sign up / log in for the Next.js UI)
+#
+# Behind require_firm: only the Next server (which holds the firm token) can
+# reach these, so raw passwords transit browser -> Next -> backend only, never
+# the public internet. The Next server mints the browser session cookie on a
+# successful call; the backend just owns account storage + verification.
+# ---------------------------------------------------------------------------
+
+
+# Self-serve signup is intentionally NOT exposed as an endpoint — dashboard
+# accounts are provisioned out-of-band by an admin (scripts/create_dashboard_user.py,
+# which calls dashboard_auth.create_user directly). Only login is reachable.
+@router.post("/dashboard/login")
+def dashboard_login(
+    req: DashboardCredentials,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    p = _platform(request)
+    if not dashboard_auth.verify_user(p.db, req.email, req.password):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return {"ok": True, "email": req.email.strip().lower()}
 
 
 # ---------------------------------------------------------------------------

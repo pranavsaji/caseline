@@ -34,6 +34,7 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     MetricsCollectedEvent,
+    RunContext,
     WorkerOptions,
     cli,
     function_tool,
@@ -41,7 +42,7 @@ from livekit.agents import (
     metrics,
 )
 from livekit.plugins import silero
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
+from livekit.plugins.turn_detector.english import EnglishModel
 
 from agent import providers
 from agent.backend_client import BackendClient
@@ -96,16 +97,65 @@ def _greeting_text(config: dict | None) -> str:
     )
 
 
+def _outbound_greeting_text(config: dict | None) -> str:
+    """Opening line for calls WE place (dashboard 'Place a call' or the lead
+    chaser). The agent initiated this call, so it must NOT say 'thanks for
+    calling' — it identifies itself, says why it's reaching out, and politely
+    checks it's a good time."""
+    config = config or {}
+    firm = config.get("firm_name") or "our office"
+    agent = config.get("agent_name") or "Caseline"
+    script = config.get("script") or {}
+    consent = config.get("consent") or {}
+    disclose = script.get("recording_disclosure", True) or consent.get("disclosure_required")
+    recording = " Just so you know, this call may be recorded for quality purposes." if disclose else ""
+    return (
+        f"Hi, this is {agent}, the AI assistant with {firm}. I'm reaching out to "
+        f"follow up about your injury inquiry.{recording} Is now an okay time to talk?"
+    )
+
+
+OUTBOUND_INSTRUCTION = (
+    "THIS IS AN OUTBOUND CALL: YOU placed this call — you are calling the person, "
+    "they did NOT call you. Never say 'thanks for calling' and never claim or "
+    "imply that they called you; if they ask why you're calling, explain warmly "
+    "that you're following up from the firm about their potential injury case. "
+    "Since you're the one interrupting their day, be especially polite: identify "
+    "yourself and the firm, confirm it's a good time, and if it isn't, apologize "
+    "and offer to call back at a better time or take a quick note."
+)
+
+
 STYLE_INSTRUCTION = (
-    "CONVERSATION STYLE: sound like a warm, competent human receptionist, not a "
-    "form. Speak in short, natural spoken sentences. Ask ONE thing at a time and "
-    "wait for the answer — never stack multiple questions in one breath. Do not "
-    "re-confirm or re-ask something the caller already told you; acknowledge it "
-    "and move on. Mirror a detail back only once, briefly, if you truly need to "
-    "verify it. React like a person would ('Oof, that sounds painful') before "
-    "getting to the next question. Never read internal fields, tool names, JSON, "
-    "IDs, or system details aloud. Keep the call moving toward: understand the "
-    "injury, qualify, and (if a fit) book a real consultation."
+    "CONVERSATION STYLE: sound like a warm, genuinely polite, competent human "
+    "receptionist, not a form. Always be courteous — greet them kindly, say "
+    "'please' and 'thank you' naturally, thank them for details they share, and "
+    "never sound curt, blunt, robotic, or impatient. Speak in short, natural "
+    "spoken sentences. Ask ONE thing at a time and wait for the answer — never "
+    "stack multiple questions in one breath. Do not re-confirm or re-ask "
+    "something the caller already told you; acknowledge it and move on. Mirror a "
+    "detail back only once, briefly, if you truly need to verify it. Lead with "
+    "empathy — react like a kind person would ('Oh no, I'm so sorry that "
+    "happened') before getting to the next question, and be extra gentle and "
+    "patient if they're in pain, upset, or confused. Never read internal fields, "
+    "tool names, JSON, IDs, or system details aloud. Keep the call moving toward: "
+    "understand the injury, qualify, and (if a fit) book a real consultation."
+)
+
+QUALIFYING_INSTRUCTION = (
+    "COLLECTING THE FACTS: qualify_lead needs four facts — incident date, injury "
+    "type, whether they're currently in treatment, and insurance status. Do NOT "
+    "call qualify_lead until the caller has actually TOLD you all four. If you "
+    "haven't yet asked whether they're getting treatment, or about insurance, "
+    "ASK — one question at a time — and wait for the answer. Never assume, "
+    "default, or guess a fact the caller didn't state (especially the treatment "
+    "and insurance yes/no): a guessed 'no' can wrongly decline or mis-handle a "
+    "real case. For the injury, get what actually got hurt (e.g. 'my back', "
+    "'broke my wrist'), not a vague 'injured badly'. If the caller is upset, "
+    "rambling, or gives things out of order, stay patient and keep gently "
+    "gathering the missing facts — don't give up and wrap up the call early. "
+    "After you qualify a good case, do NOT jump straight to goodbye: offer the "
+    "consultation and try to book it before ending."
 )
 
 SCHEDULING_INSTRUCTION = (
@@ -122,10 +172,13 @@ SCHEDULING_INSTRUCTION = (
 
 CLOSING_INSTRUCTION = (
     "ENDING THE CALL: when the caller confirms they have nothing more, wrap up "
-    "in this order — make sure you've called write_to_cms, give a short warm "
-    "goodbye (one sentence), and then call end_call to hang up. Do not stay on "
-    "the line after saying goodbye, and never call end_call before you've said "
-    "it."
+    "in this order — first make sure you've called write_to_cms, then call "
+    "end_call. Put your warm one-sentence goodbye in end_call's `farewell` "
+    "argument (thank them for calling, and mention the booked consult if there "
+    "is one) — end_call speaks that goodbye and waits for it to finish before "
+    "hanging up. Do NOT say the goodbye as a separate message and then call "
+    "end_call; that would make the caller hear it twice. Just call end_call "
+    "with the farewell."
 )
 
 
@@ -155,6 +208,7 @@ class IntakeAgent(Agent):
         call_id: str,
         config: dict | None,
         on_guardrail: "Callable[[str, float], None] | None" = None,
+        outbound: bool = False,
     ):
         config = config or {}
         instructions = config.get("instructions") or DEFAULT_INSTRUCTIONS
@@ -165,6 +219,11 @@ class IntakeAgent(Agent):
         # "today" / "a few hours ago" / "last week" into a correct ISO date.
         instructions = f"{instructions}\n\n{_current_time_line(config.get('timezone'))}"
         instructions = f"{instructions}\n\n{STYLE_INSTRUCTION}"
+        # On outbound calls the agent placed the call — tell it so it never claims
+        # the caller rang in ("thanks for calling" / "you called me").
+        if outbound:
+            instructions = f"{instructions}\n\n{OUTBOUND_INSTRUCTION}"
+        instructions = f"{instructions}\n\n{QUALIFYING_INSTRUCTION}"
         instructions = f"{instructions}\n\n{SCHEDULING_INSTRUCTION}"
         instructions = f"{instructions}\n\n{CLOSING_INSTRUCTION}"
         super().__init__(instructions=instructions)
@@ -431,20 +490,49 @@ class IntakeAgent(Agent):
         return result["status"]
 
     @function_tool
-    async def end_call(self) -> str:
-        """Hang up and end the call. Call this once the conversation is truly
-        finished — after you have written to the CMS, said a brief goodbye, and
-        the caller has nothing more. Say your closing line BEFORE calling this;
-        it waits for that line to finish playing, then disconnects both sides."""
+    async def end_call(
+        self,
+        context: RunContext,
+        farewell: str = "Thanks so much for calling. Take care and feel better soon!",
+    ) -> str:
+        """Hang up and end the call once the conversation is truly finished —
+        after you have written to the CMS and the caller has nothing more.
+
+        Do NOT say your goodbye in a separate turn; pass it here as ``farewell``
+        and this tool speaks it, waits for it to finish playing, and only then
+        disconnects — so the caller always hears a warm sign-off instead of the
+        line suddenly going dead.
+
+        Args:
+            farewell: A short, warm one-sentence goodbye that thanks the caller
+                for calling (e.g. "Thanks for calling — we'll see you Monday at
+                one, take care!"). Reference the booking if one was made.
+        """
         logger.info("end_call requested for %s", self._call_id)
-        # Let the closing line finish before dropping the connection, otherwise
-        # the caller hears the goodbye get cut off.
+        # 1) If the model happened to speak anything in this same turn, let that
+        #    finish first (RunContext.wait_for_playout is the supported way to
+        #    await the tool's own turn without the circular-wait error).
         try:
-            speech = self.session.current_speech
-            if speech is not None:
-                await speech.wait_for_playout()
+            await context.wait_for_playout()
+        except Exception:
+            logger.debug("end_call: wait_for_playout failed", exc_info=True)
+        # 2) Speak our guaranteed farewell and wait for it to fully play out.
+        #    This covers the common case where the model calls end_call with no
+        #    spoken goodbye at all — the reason calls were dropping silently.
+        #    Non-interruptible so it can't be cut short before hangup.
+        try:
+            handle = self.session.say(farewell, allow_interruptions=False)
+            await handle.wait_for_playout()
         except Exception:  # never let a teardown detail keep the call alive
-            logger.debug("end_call: could not await final speech", exc_info=True)
+            logger.debug("end_call: could not speak/await farewell", exc_info=True)
+        # 3) wait_for_playout resolves when the server has pushed the audio, but
+        #    the caller's client (browser WebRTC / SIP jitter buffer) still needs
+        #    a beat to actually play the tail. Drain briefly so the goodbye isn't
+        #    truncated by the room teardown below.
+        try:
+            await asyncio.sleep(0.75)
+        except Exception:
+            pass
         # Deleting the room disconnects every participant (caller + agent) and
         # triggers the job shutdown callback (transcript flush, CMS drain).
         try:
@@ -498,6 +586,49 @@ def _history_turns(session: AgentSession) -> list[dict]:
     return turns
 
 
+async def _warm_llm_cache(primary_llm: object, agent: "IntakeAgent") -> None:
+    """Absorb the first-call cold cost on the PRIMARY LLM while the greeting plays,
+    so the caller's first real turn is warm.
+
+    The first turn is otherwise the slowest of the call: a fresh TCP+TLS connect
+    plus the first ephemeral-cache WRITE of the large, stable (system prompt + all
+    nine tool schemas) prefix. Measured cold, that first write runs several seconds
+    — long enough that it can trip the FallbackAdapter's 5s per-attempt timeout,
+    mark a healthy-but-slow primary UNAVAILABLE, and stall the caller ~16s before a
+    fallback answers (observed on a live web call). Two fixes here:
+
+      * Warm the PRIMARY INSTANCE directly, not through the FallbackAdapter — a
+        slow warmup must not flip the adapter's health state and drop the primary
+        for the caller's first real turn. (The primary's own httpx read timeout is
+        generous, so a cold call completes instead of being killed at 5s.)
+      * Drain each generation FULLY (not break-after-one-token) so the cache write
+        actually lands and the connection is pooled before the caller speaks.
+
+    The ~8s greeting (plus session.start) is otherwise idle, so by the caller's
+    first sentence the real turn through the adapter is a warm cache hit (~1.5s
+    TTFT, well under the 5s failover budget). Best-effort: any failure is ignored,
+    a warmup problem must never affect the call."""
+    try:
+        from livekit.agents.llm import ChatContext
+
+        ctx = ChatContext.empty()
+        ctx.add_message(role="system", content=agent.instructions)
+        ctx.add_message(role="user", content="hello")
+        t0 = time.perf_counter()
+        # First pass pays the cold connect + cache write; the second confirms the
+        # warm read path. Drain both fully so the write completes before turn one.
+        for _ in range(2):
+            stream = primary_llm.chat(chat_ctx=ctx, tools=agent.tools)  # type: ignore[attr-defined]
+            try:
+                async for _chunk in stream:
+                    pass
+            finally:
+                await stream.aclose()
+        logger.info("llm cache warmup complete in %.0fms", (time.perf_counter() - t0) * 1000)
+    except Exception:  # noqa: BLE001 — warmup is a latency optimization, not required
+        logger.debug("llm cache warmup skipped", exc_info=True)
+
+
 def prewarm(proc: JobProcess) -> None:
     # Pre-load VAD so it never costs a caller their first-turn latency.
     proc.userdata["vad"] = silero.VAD.load()
@@ -506,6 +637,10 @@ def prewarm(proc: JobProcess) -> None:
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
     call_id = ctx.room.name
+    # Calls WE place get room names prefixed "outbound-" (dashboard dial:
+    # "outbound-manual-…"; lead chaser: "outbound-<lead>"). Everything else is
+    # someone reaching us (inbound SIP "call-…", web "web-manual-…").
+    is_outbound = call_id.startswith("outbound")
     backend = BackendClient()
     tracker = TurnLatencyTracker(call_id=call_id)
     usage = metrics.UsageCollector()
@@ -517,7 +652,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # Phase 4: voice_id may be a cloned per-firm voice (voice_profiles ->
     # agents.voice_id); the TTS stage doesn't care where the id came from.
     voice_id = (config or {}).get("voice_id") or os.getenv("CARTESIA_VOICE_ID") or None
-    greeting = _greeting_text(config)
+    greeting = _outbound_greeting_text(config) if is_outbound else _greeting_text(config)
 
     # Phase 4: selective S2S is evidence-gated (agent/s2s.py). Until a live
     # benchmark verdict justifies it, the greeting rides the cascaded
@@ -529,8 +664,13 @@ async def entrypoint(ctx: JobContext) -> None:
 
     # Phase 2: each stage is a failover stack (primary + optional fallbacks
     # behind a health-check driven FallbackAdapter — mid-call cutover).
+    # The firm's chosen LLM (Config Studio -> agents.llm_config) overrides the
+    # worker's env default per call; empty falls back to CASELINE_LLM_PROVIDERS.
+    llm_spec = ((config or {}).get("llm") or {}).get("providers") or None
+    if llm_spec:
+        logger.info("call %s using firm-selected LLM: %s", call_id, llm_spec)
     stt_stack = providers.build_stt()
-    llm_stack = providers.build_llm()
+    llm_stack = providers.build_llm(llm_spec)
     tts_stack = providers.build_tts(voice_id)
 
     session = AgentSession(
@@ -538,9 +678,21 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=llm_stack.adapter,
         tts=tts_stack.adapter,
         vad=ctx.proc.userdata["vad"],
-        turn_detection=MultilingualModel(),
+        # English-only turn detector: the intake agent speaks and listens in
+        # English (greeting, instructions, TTS language all "en"), so the lighter
+        # English model does the same job as the multilingual one with a smaller,
+        # faster inference on every end-of-utterance — shaving the EOU term of
+        # turn latency without any behaviour change for these calls.
+        turn_detection=EnglishModel(),
         preemptive_generation=True,  # fire LLM on STT partials
         min_endpointing_delay=0.4,  # tuned turn-taking (architecture doc §9)
+        # Barge-in: the caller can talk over the agent and it stops immediately.
+        # Enabled explicitly (not just relying on defaults) and tuned to trigger
+        # quickly — 0.3s of speech is enough, and no minimum word count — so a
+        # caller can cut the agent off mid-sentence the way they would a person.
+        allow_interruptions=True,
+        min_interruption_duration=0.3,
+        min_interruption_words=0,
     )
 
     def _report(turn: TurnSample | None) -> None:
@@ -581,20 +733,28 @@ async def entrypoint(ctx: JobContext) -> None:
 
     ctx.add_shutdown_callback(_shutdown)
 
-    await session.start(
-        agent=IntakeAgent(
-            backend=backend,
-            call_id=call_id,
-            config=config,
-            on_guardrail=lambda sid, ms: _report(tracker.on_guardrail(sid, ms)),
-        ),
-        room=ctx.room,
+    intake = IntakeAgent(
+        backend=backend,
+        call_id=call_id,
+        config=config,
+        on_guardrail=lambda sid, ms: _report(tracker.on_guardrail(sid, ms)),
+        outbound=is_outbound,
     )
+    # Warm the primary LLM's connection + prompt cache as early as possible, so
+    # the caller's first real turn is a warm cache hit (~1.5s TTFT) instead of a
+    # cold write (several seconds) that can trip the 5s failover timeout and stall
+    # the caller ~16s (observed). Kicked off BEFORE session.start so it overlaps
+    # room connect AND the ~8s greeting for the biggest possible head start.
+    warmup = asyncio.create_task(_warm_llm_cache(llm_stack.instances[0], intake))
+    await session.start(agent=intake, room=ctx.room)
     # Speak a fixed opening line directly through TTS instead of asking the LLM
     # to generate one. generate_reply() runs a full Claude call (big system
     # prompt + all tools) before any audio, so the caller heard several seconds
     # of silence and talked over it. say() starts speaking almost immediately.
     await session.say(greeting, allow_interruptions=True)
+    # Don't leave the warmup task dangling if the greeting finishes first.
+    if not warmup.done():
+        warmup.add_done_callback(lambda t: t.exception())
 
 
 def _start_platform_health_server() -> None:

@@ -18,6 +18,7 @@ import DataTable, { type Column } from "@/components/DataTable";
 import Pill from "@/components/Pill";
 import EmptyState from "@/components/EmptyState";
 import SoftButton from "@/components/SoftButton";
+import LeadReview from "@/components/LeadReview";
 import { pulseStatus } from "@/components/PulseTile";
 
 export const dynamic = "force-dynamic";
@@ -83,6 +84,12 @@ const leadColumns: Column<Lead>[] = [
       l.external_cms_id ? <Pill tone="ok">synced</Pill> : <Pill tone="muted">pending</Pill>,
   },
   { key: "created_at", header: "Created", render: (l) => l.created_at?.slice(0, 19) ?? "—" },
+  {
+    key: "review",
+    header: "Attorney review",
+    align: "right",
+    render: (l) => <LeadReview leadId={l.id} />,
+  },
 ];
 
 const consultColumns: Column<Consult>[] = [

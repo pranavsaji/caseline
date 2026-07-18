@@ -5,6 +5,7 @@ import Pill from "@/components/Pill";
 import Notice from "@/components/Notice";
 import EmptyState from "@/components/EmptyState";
 import TranscriptTurn, { TranscriptList } from "@/components/TranscriptTurn";
+import ThreadReply from "@/components/ThreadReply";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,19 @@ export default async function ThreadDetailPage({ params }: { params: Promise<{ i
           </TranscriptList>
         )}
       </Card>
+
+      {open ? (
+        <Card title="Manual follow-up" className="stackCard">
+          <ThreadReply threadId={thread.id} />
+        </Card>
+      ) : (
+        <div className="stackCard">
+          <Notice tone="warn" title="Thread closed">
+            This thread is {thread.closed_reason ?? "closed"} — manual follow-ups
+            are only allowed on open threads.
+          </Notice>
+        </div>
+      )}
 
       <Card title="State" className="stackCard">
         <Notice tone="info" icon={false}>

@@ -2,12 +2,16 @@
 assignment, tenancy. The two hard rules under test: no clone without the
 voice owner's consent, and no non-ready voice ever reaches a caller."""
 
+import base64
+
 import httpx
 import pytest
 
 from api.voice import CartesiaVoiceCloneProvider, MockVoiceCloneProvider, VoiceCloneError
 
 SAMPLE_URI = "https://firm-assets.example.com/partner-voice-sample.wav"
+# A tiny inline sample, as the browser recorder/uploader sends it.
+SAMPLE_DATA = "data:audio/webm;base64," + base64.b64encode(b"RIFFfakewav").decode()
 
 
 def create_profile(v1_client, firm, **overrides):
@@ -63,9 +67,28 @@ def test_clone_creates_ready_profile_with_provider_voice_id(v1_client, firm, pla
     assert profiles[0]["provider"] == "mock"
 
 
+def test_clone_from_inline_recording_uploads_audio(v1_client, firm, platform):
+    # Browser recording / file upload path: no pre-hosted URL, audio inline.
+    r = create_profile(v1_client, firm, sample_uri=None, sample_data=SAMPLE_DATA)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ready"
+    # The decoded bytes reached the provider; sample_uri is a compact marker,
+    # never the raw base64 blob.
+    created = platform.voice_cloner.created[0]
+    assert created["audio_bytes"] == len(b"RIFFfakewav")
+    assert created["sample_uri"].startswith("inline:audio/webm:")
+    profiles = v1_client.get("/v1/voice-profiles", headers=firm["headers"]).json()
+    assert "base64" not in (profiles[0]["sample_uri"] or "")
+
+
+def test_create_without_any_sample_is_rejected(v1_client, firm):
+    r = create_profile(v1_client, firm, sample_uri=None)
+    assert r.status_code == 422
+
+
 def test_provider_failure_marks_profile_failed(v1_client, firm, platform):
     class ExplodingCloner(MockVoiceCloneProvider):
-        def create_voice(self, name, sample_uri, description=None):
+        def create_voice(self, name, sample_uri, description=None, audio=None, audio_mime=None):
             raise VoiceCloneError("provider melted")
 
     platform.voice_cloner = ExplodingCloner()
@@ -147,6 +170,67 @@ def test_cartesia_adapter_clones_via_api():
     provider = CartesiaVoiceCloneProvider("key", transport=transport)
     voice_id = provider.create_voice("Brand Voice", SAMPLE_URI)
     assert voice_id == "cartesia-voice-42"
+    provider.close()
+
+
+def test_cartesia_adapter_clones_from_inline_audio_without_fetching():
+    # Direct bytes (browser recording / upload): no network fetch of a sample.
+    transport = _cartesia_transport(
+        {"/voices/clone": httpx.Response(201, json={"id": "cartesia-voice-inline"})}
+    )
+    provider = CartesiaVoiceCloneProvider("key", transport=transport)
+    voice_id = provider.create_voice("Brand Voice", "inline:audio/webm", audio=b"RIFFfakewav")
+    assert voice_id == "cartesia-voice-inline"
+    provider.close()
+
+
+def test_cartesia_adapter_decodes_inline_data_uri():
+    transport = _cartesia_transport(
+        {"/voices/clone": httpx.Response(201, json={"id": "cartesia-voice-datauri"})}
+    )
+    provider = CartesiaVoiceCloneProvider("key", transport=transport)
+    assert provider.create_voice("Brand Voice", SAMPLE_DATA) == "cartesia-voice-datauri"
+    provider.close()
+
+
+def test_cartesia_adapter_refuses_unsupported_scheme_instead_of_empty_clone():
+    # Regression: an s3:// (or any non-http) reference used to silently clone
+    # from EMPTY bytes. It must now fail loudly rather than produce a dud voice.
+    transport = _cartesia_transport(
+        {"/voices/clone": httpx.Response(201, json={"id": "should-not-be-reached"})}
+    )
+    provider = CartesiaVoiceCloneProvider("key", transport=transport)
+    with pytest.raises(VoiceCloneError, match="Unsupported sample reference"):
+        provider.create_voice("Brand Voice", "s3://firm-assets/sample.wav")
+    provider.close()
+
+
+@pytest.mark.parametrize(
+    "audio,mime,want_name,want_ct",
+    [
+        (b"ID3\x03fake-mp3-bytes", "audio/mpeg", "sample.mp3", "audio/mpeg"),
+        (b"OggSfake-opus-note", "audio/ogg", "sample.ogg", "audio/ogg"),
+        (b"RIFF....WAVEfake", "audio/wav", "sample.wav", "audio/wav"),
+        # Browser reported no MIME (empty) — magic bytes still identify it.
+        (b"OggSwhatsapp-voice", "", "sample.ogg", "audio/ogg"),
+    ],
+)
+def test_cartesia_labels_clip_by_actual_format(audio, mime, want_name, want_ct):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/voices/clone" in str(request.url):
+            # The multipart filename + content-type must reflect the real audio.
+            body = request.content
+            seen["name"] = want_name if want_name.encode() in body else None
+            seen["ct"] = want_ct if want_ct.encode() in body else None
+            return httpx.Response(201, json={"id": "cartesia-voice-fmt"})
+        return httpx.Response(404)
+
+    provider = CartesiaVoiceCloneProvider("key", transport=httpx.MockTransport(handler))
+    provider.create_voice("Brand", "inline", audio=audio, audio_mime=mime)
+    assert seen["name"] == want_name
+    assert seen["ct"] == want_ct
     provider.close()
 
 

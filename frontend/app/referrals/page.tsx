@@ -12,6 +12,8 @@ import Card from "@/components/Card";
 import DataTable, { type Column } from "@/components/DataTable";
 import Pill, { type PillTone } from "@/components/Pill";
 import EmptyState from "@/components/EmptyState";
+import ReferralActions from "@/components/ReferralActions";
+import PartnerForm from "@/components/PartnerForm";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +46,12 @@ const referralColumns: Column<Referral>[] = [
   },
   { key: "status", header: "Status", render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill> },
   { key: "created_at", header: "Proposed", render: (r) => r.created_at?.slice(0, 19) ?? "—" },
+  {
+    key: "actions",
+    header: "Actions",
+    align: "right",
+    render: (r) => <ReferralActions referralId={r.id} status={r.status} />,
+  },
 ];
 
 const partnerColumns: Column<ReferralPartner>[] = [
@@ -100,11 +108,14 @@ export default async function Referrals() {
           getRowKey={(p) => p.id}
           empty={
             <EmptyState icon={Building2} title="No partners yet">
-              Add a partner firm via POST /v1/referral-partners to start matching
-              refer-out leads.
+              Register a partner firm below to start matching refer-out leads.
             </EmptyState>
           }
         />
+      </Card>
+
+      <Card title="Register a partner firm" className="stackCard">
+        <PartnerForm />
       </Card>
     </>
   );

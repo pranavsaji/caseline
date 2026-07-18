@@ -10,6 +10,8 @@ import {
   Share2,
   SlidersHorizontal,
   PencilRuler,
+  PhoneCall,
+  Activity,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import styles from "./kit.module.css";
@@ -18,11 +20,13 @@ import styles from "./kit.module.css";
  *  can't hand a function prop to a client component, so we key by name. */
 const ICONS: Record<string, ComponentType<{ size?: number; className?: string; "aria-hidden"?: boolean }>> = {
   overview: LayoutGrid,
+  calls: PhoneCall,
   threads: MessagesSquare,
   analytics: BarChart3,
   tuning: SlidersHorizontal,
   referrals: Share2,
   studio: PencilRuler,
+  ops: Activity,
   config: Braces,
 };
 

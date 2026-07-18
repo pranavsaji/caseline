@@ -1,0 +1,11 @@
+-- Per-firm LLM model selection.
+--
+-- Until now the conversation/call LLM was fixed by the worker's env
+-- (CASELINE_LLM_PROVIDERS). This lets each firm pick the provider+model its
+-- calls run on, editable from the Config Studio and applied to the next call
+-- without a worker restart (same short-TTL config cache as every other edit).
+--
+-- Shape: {"providers": "anthropic:claude-haiku-4-5,deepseek:deepseek-chat"}
+-- A comma list is primary + failover, exactly like the env spec. An empty
+-- object means "use the worker default", so existing agents are unaffected.
+ALTER TABLE agents ADD COLUMN llm_config jsonb NOT NULL DEFAULT '{}'::jsonb;

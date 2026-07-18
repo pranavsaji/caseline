@@ -303,6 +303,17 @@ export type WebSession = {
 export const startWebSession = () =>
   api("/v1/calls/web-session", { method: "POST" }) as Promise<WebSession>;
 
+// --- dashboard operator auth (server-side; the firm token authenticates the
+// call to the backend, the browser only ever talks to the Next auth routes).
+// Self-serve signup is disabled — accounts are provisioned via
+// scripts/create_dashboard_user.py, so only login is exposed here. ---
+
+export const loginUser = (email: string, password: string) =>
+  api("/v1/dashboard/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  }) as Promise<{ ok: boolean; email: string }>;
+
 // --- Write actions surfacing existing backend endpoints ---
 
 export const createVoiceProfile = (body: {

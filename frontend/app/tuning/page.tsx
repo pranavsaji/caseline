@@ -9,6 +9,7 @@ import DataTable, { type Column } from "@/components/DataTable";
 import Pill from "@/components/Pill";
 import Notice from "@/components/Notice";
 import EmptyState from "@/components/EmptyState";
+import ApplyTuningRules from "@/components/ApplyTuningRules";
 
 export const dynamic = "force-dynamic";
 
@@ -86,10 +87,14 @@ export default async function Tuning() {
       {report.proposed_rules && (
         <Card title="Proposed qualification rules" className="stackCard">
           <Notice tone="info" icon={false}>
-            Review with an attorney, then apply from the Config Studio (or PUT
-            /v1/agents/&#123;id&#125;/config).
+            Review with an attorney, then apply directly to the live intake agent.
+            The change reaches the next call, SMS thread, and chased lead within
+            seconds — the same validated path Config Studio uses.
             <pre>{JSON.stringify(report.proposed_rules, null, 2)}</pre>
           </Notice>
+          <div className="stackCard">
+            <ApplyTuningRules days={report.days} />
+          </div>
         </Card>
       )}
     </>

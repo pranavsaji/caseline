@@ -81,6 +81,39 @@ class TwilioSMSProvider(SMSProvider):
         return r.json()["sid"]
 
 
+class PlivoSMSProvider(SMSProvider):
+    """Plivo Messages API. Same seam as Twilio — config-selected in
+    ``make_sms_provider``. Plivo's src/dst want bare digits (no leading '+'),
+    so we strip it; the returned message_uuid is the provider id."""
+
+    name = "plivo"
+
+    def __init__(self, auth_id: str, auth_token: str, from_number: str):
+        self._auth_id = auth_id
+        self._auth = (auth_id, auth_token)
+        self._from = from_number
+
+    @staticmethod
+    def _digits(number: str | None) -> str:
+        return re.sub(r"\D", "", number or "")
+
+    def send(self, to: str, body: str, from_number: str | None = None) -> str:
+        r = httpx.post(
+            f"https://api.plivo.com/v1/Account/{self._auth_id}/Message/",
+            auth=self._auth,
+            json={
+                "src": self._digits(from_number or self._from),
+                "dst": self._digits(to),
+                "text": body,
+            },
+            timeout=10.0,
+        )
+        r.raise_for_status()
+        # Plivo returns {"message_uuid": ["<id>"], "api_id": "..."}.
+        uuids = r.json().get("message_uuid") or []
+        return uuids[0] if uuids else r.json().get("api_id", "plivo-sent")
+
+
 class EmailProvider(ABC):
     name: str
 
@@ -138,6 +171,14 @@ def make_email_provider() -> EmailProvider:
 
 
 def make_sms_provider() -> SMSProvider:
+    # Plivo preferred when its credentials are present (the firm's chosen
+    # provider), then Twilio, else the local logging no-op. All three satisfy
+    # the same SMSProvider seam, so nothing downstream changes.
+    plivo_id = os.getenv("PLIVO_AUTH_ID")
+    plivo_token = os.getenv("PLIVO_AUTH_TOKEN")
+    plivo_from = os.getenv("PLIVO_FROM_NUMBER")
+    if plivo_id and plivo_token and plivo_from:
+        return PlivoSMSProvider(plivo_id, plivo_token, plivo_from)
     sid = os.getenv("TWILIO_ACCOUNT_SID")
     token = os.getenv("TWILIO_AUTH_TOKEN")
     from_number = os.getenv("TWILIO_FROM_NUMBER")

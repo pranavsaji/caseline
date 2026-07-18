@@ -1,115 +1,104 @@
 /* =========================================================================
-   Caseline Dashboard — Neomorphic foundation (Phase 0)
-   Design system: uiplan.md. Soft surfaces + high-contrast text/pills.
-   Themes: Slate Light (default) + Graphite Dark, via [data-theme] and
-   prefers-color-scheme. Backward-compatible aliases (--bg/--panel/--border)
-   keep existing pages coherent until Phase 2 component migration.
+   Caseline Dashboard — Aurora / deep-space foundation
+   Design language: futuristic glassmorphism over a live WebGL aurora field.
+   (Replaces the Phase 0–4 neomorphic system; see uiplan.md.)
+
+   Strategy: keep the component kit's variable *names* (--surface, --nm-raised,
+   --accent, …) so components/kit.module.css composes them unchanged — only the
+   *values* change: opaque soft surfaces → translucent glass; dual soft shadows
+   → hairline glass borders + depth + neon glow. Two themes: Aurora (default,
+   dark) and Holographic (opt-in light), via [data-theme].
    ========================================================================= */
 
-/* ---- Blue & White (default) -------------------------------------------- */
+/* ---- Aurora (default, dark glass) -------------------------------------- */
 :root {
-  /* Neomorphic surfaces — a cool near-white base so the app reads "white",
-     with blue-tinted shadows so the soft extrusion stays visible (a pure
-     #fff base would erase the highlight and flatten the material). */
-  --surface: #eef3fc;
-  --surface-raised: #f8faff;
-  --surface-sunken: #e2e9f7;
-  --shadow-dark: #ccd7ee;
-  --shadow-light: #ffffff;
+  /* Deep-space base painted behind the WebGL canvas (and the canvas fallback).
+     Near-black with a cool cast — true black causes halation and flattens the
+     elevation system (2026 dark-UI practice: Linear/Vercel/Grafana school). */
+  --space: #060711;
+  --space-2: #0a0c18;
+
+  /* Glass surfaces — kept mostly opaque so content reads crisply; the aurora
+     glows in the GAPS between panels rather than washing through every card. */
+  --surface: rgba(18, 21, 37, 0.82);
+  --surface-raised: rgba(28, 32, 54, 0.90);
+  --surface-sunken: rgba(9, 11, 21, 0.74);
+
+  /* Glass edges: a cool indigo hairline (top-left highlight, base outline). */
+  --glass-line: rgba(150, 170, 255, 0.13);
+  --glass-line-strong: rgba(165, 185, 255, 0.30);
+  --glass-glow: rgba(34, 224, 199, 0.28);
 
   /* Text */
-  --text: #1c2836;
-  --muted: #556274;
+  --text: #eef1fb;
+  --muted: #a4aedd;
 
-  /* Accent — vivid blue. Kept dark enough that on-accent white text clears
-     AA 4.5:1 on the primary button (5.17:1 — the Phase 3 contrast gate). */
-  --accent: #2563eb;
-  --accent-deep: #1d4ed8;
-  --accent-hover: #1d4ed8;
-  --on-accent: #ffffff;
+  /* Accent — a vivid cyan-teal primary with an electric-violet companion (the
+     "indigo→cyan" AI gradient distilled to two saturated hues). On-accent stays
+     dark so text on the solid teal button clears AA (#22e0c7 w/ #04130f ≈ 9:1). */
+  --accent: #22e0c7;
+  --accent-2: #9d7bff;
+  --accent-deep: #12b8a6;
+  --accent-hover: #5cf2df;
+  --on-accent: #04130f;
 
-  /* Semantic status FILLS (solid pill/notice/glow surfaces — never text). */
-  --ok: #1f9d6b;
-  --warn: #c9871f;
-  --bad: #d0453f;
-  --info: #2563eb;
+  /* Signature gradient — indigo → cyan, for the brand mark, active nav, and
+     hero tiles. Reads as "intelligent motion" without generic SaaS gradients. */
+  --accent-grad: linear-gradient(120deg, #22e0c7 0%, #5aa8ff 46%, #9d7bff 100%);
+  --accent-grad-soft: linear-gradient(120deg, rgba(34,224,199,0.16), rgba(157,123,255,0.16));
 
-  /* Semantic INK — the same hues darkened to clear AA 4.5:1 as *foreground
-     text* on soft surfaces and on their own tinted pill backgrounds. Pills,
-     PulseTile values, error text and danger buttons use these, never the
-     fills above. (Verified: scratchpad/final-audit.mjs — all ≥4.5.) */
-  --ok-ink: #156b49;
-  --warn-ink: #815614;
-  --bad-ink: #a23631;
-  --info-ink: #2551c6;
-  --muted-ink: #4f5c6c;
+  /* Semantic status FILLS (solid pill/notice edges/glow — never body text). */
+  --ok: #2ee6a8;
+  --warn: #fbbf24;
+  --bad: #fb7185;
+  --info: #5aa8ff;
 
-  /* Backward-compat aliases for pre-redesign pages */
-  --bg: var(--surface);
+  /* Semantic INK — lightened hues used as *foreground text* on glass and on
+     their own tinted pill backgrounds; all clear AA 4.5:1 on the dark glass. */
+  --ok-ink: #6ee7b7;
+  --warn-ink: #fcd34d;
+  --bad-ink: #fda4af;
+  --info-ink: #93c5fd;
+  --muted-ink: #b8c0e4;
+
+  /* Backward-compat aliases for any pre-redesign markup */
+  --bg: var(--space);
   --panel: var(--surface-raised);
-  --border: #d5deee;
+  --border: var(--glass-line);
 
-  /* Neomorphic material tokens */
-  --nm-dist: 6px;
-  --nm-blur: 14px;
+  /* Material tokens (reused by kit.module.css under their old names) */
+  --nm-blur: 16px;      /* backdrop blur radius for glass surfaces */
   --radius: 18px;
   --radius-sm: 12px;
 
+  /* "Raised" glass: hairline outline + soft top highlight + depth shadow. */
   --nm-raised:
-    var(--nm-dist) var(--nm-dist) var(--nm-blur) var(--shadow-dark),
-    calc(-1 * var(--nm-dist)) calc(-1 * var(--nm-dist)) var(--nm-blur) var(--shadow-light);
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 0 0 1px var(--glass-line),
+    0 10px 34px rgba(3, 4, 18, 0.55);
+  /* "Pressed" glass well: recessed inner shadow + hairline. */
   --nm-pressed:
-    inset var(--nm-dist) var(--nm-dist) var(--nm-blur) var(--shadow-dark),
-    inset calc(-1 * var(--nm-dist)) calc(-1 * var(--nm-dist)) var(--nm-blur) var(--shadow-light);
+    inset 0 0 0 1px var(--glass-line),
+    inset 0 2px 14px rgba(3, 4, 18, 0.6);
+  /* "Flat" glass: subtle outline + light depth. */
   --nm-flat:
-    3px 3px 8px var(--shadow-dark),
-    -3px -3px 8px var(--shadow-light);
+    inset 0 0 0 1px var(--glass-line),
+    0 4px 16px rgba(3, 4, 18, 0.4);
+  /* Neon glow used on hover / active / signature tiles. */
+  --nm-glow:
+    0 0 0 1px var(--glass-line-strong),
+    0 0 22px var(--nm-blur) var(--glass-glow);
 
-  /* Font stacks (variables injected by next/font, with graceful fallbacks) */
   --font-display: var(--font-space-grotesk), "Space Grotesk", system-ui, sans-serif;
   --font-body: var(--font-inter), Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  color-scheme: light;
-}
-
-/* ---- Graphite Dark ----------------------------------------------------- */
-:root[data-theme="dark"] {
-  --surface: #1e222b;
-  --surface-raised: #242a35;
-  --surface-sunken: #191d25;
-  --shadow-dark: #141820;
-  --shadow-light: #2c3340;
-
-  --text: #e7ecf5;
-  --muted: #96a0b5;
-
-  --accent: #5b8def;
-  --accent-deep: #3f6bd0;
-  --accent-hover: #7aa4f4;
-  --on-accent: #0f1320;
-
-  --ok: #3fb27f;
-  --warn: #e0a03d;
-  --bad: #e05d5d;
-  --info: #5b8def;
-
-  /* Semantic ink — on dark surfaces these lighten (rather than darken) to
-     clear AA 4.5:1 as foreground text. */
-  --ok-ink: #3fb27f;
-  --warn-ink: #e0a03d;
-  --bad-ink: #e57777;
-  --info-ink: #6f9bf1;
-  --muted-ink: #96a0b5;
-
-  --border: #313846;
-
   color-scheme: dark;
 }
 
-/* The Blue & White theme is the default look; Graphite Dark is opt-in via the
-   theme toggle (persisted to localStorage). We intentionally do NOT auto-apply
-   dark from prefers-color-scheme — the product's signature surface is white. */
+/* data-theme="dark" is an explicit alias for the default Aurora dark theme. The
+   dashboard is dark-only (the light/Holographic variant was removed). */
+:root[data-theme="dark"] { color-scheme: dark; }
 
 /* =========================================================================
    Base
@@ -120,11 +109,18 @@ html { -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--surface);
+  /* Deep-space gradient sits behind the fixed WebGL aurora canvas; if WebGL is
+     unavailable or reduced-motion is on, this static gradient is the backdrop. */
+  background:
+    radial-gradient(1200px 800px at 15% -10%, color-mix(in srgb, var(--accent-2) 22%, transparent), transparent 60%),
+    radial-gradient(1000px 700px at 100% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 55%),
+    linear-gradient(160deg, var(--space) 0%, var(--space-2) 100%);
+  background-attachment: fixed;
   color: var(--text);
   font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.5;
+  min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   transition: background-color 0.25s ease, color 0.25s ease;
@@ -135,8 +131,6 @@ a:hover { text-decoration: underline; }
 
 h1, h2, h3 { font-family: var(--font-display); }
 
-/* Visible keyboard focus — shadows are invisible to keyboard users, so we
-   render a real high-contrast ring on every focusable element. */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -144,16 +138,11 @@ h1, h2, h3 { font-family: var(--font-display); }
 }
 :focus:not(:focus-visible) { outline: none; }
 
-/* Numeric data should not jitter between rows. */
 .tabular { font-variant-numeric: tabular-nums; }
 
-/* Vertical rhythm between stacked cards/sections on redesigned pages.
-   (Global, not a CSS Module class, so component `className` passthrough works.) */
 .stackCard { margin-top: 20px; }
 .stackCard:first-child { margin-top: 0; }
 
-/* Form layout helpers for the Studio / Config pages. Two-up on wide screens,
-   single column on narrow; consistent vertical gap between stacked rows. */
 .formGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -162,57 +151,44 @@ h1, h2, h3 { font-family: var(--font-display); }
 .formRow { margin-top: 16px; }
 
 /* =========================================================================
-   Neomorphic material primitives (composed by the Phase 1 component kit)
+   WebGL aurora background layer (components/AuroraBackground.tsx)
+   ========================================================================= */
+.auroraCanvas {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+/* =========================================================================
+   Glass material primitives
    ========================================================================= */
 .nm {
   background: var(--surface);
+  -webkit-backdrop-filter: blur(var(--nm-blur));
+  backdrop-filter: blur(var(--nm-blur));
   box-shadow: var(--nm-raised);
   border-radius: var(--radius);
 }
 .nm-inset {
-  background: var(--surface);
+  background: var(--surface-sunken);
+  -webkit-backdrop-filter: blur(var(--nm-blur));
+  backdrop-filter: blur(var(--nm-blur));
   box-shadow: var(--nm-pressed);
   border-radius: var(--radius);
 }
 .nm-flat {
   background: var(--surface);
+  -webkit-backdrop-filter: blur(var(--nm-blur));
+  backdrop-filter: blur(var(--nm-blur));
   box-shadow: var(--nm-flat);
   border-radius: var(--radius);
 }
 
 /* =========================================================================
-   Chrome that lives outside the CSS-Module kit.
-   As of Phase 2 every page renders the neomorphic component kit
-   (components/*, kit.module.css); the old backward-compat element/class
-   restyles were removed so they can't fight the kit (double table shadows,
-   stray input margins). Only the ThemeToggle button — a plain <button> the
-   AppShell pins in its footer — still needs a global style here.
-   ========================================================================= */
-
-/* Neutral soft toggle (never the accent-filled variant). */
-.theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface);
-  color: var(--muted);
-  border: none;
-  border-radius: var(--radius-sm);
-  box-shadow: var(--nm-flat);
-  padding: 7px 12px;
-  font-family: var(--font-body);
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
-}
-.theme-toggle:hover { color: var(--text); box-shadow: var(--nm-raised); }
-.theme-toggle:active { transform: translateY(1px); box-shadow: var(--nm-pressed); }
-.theme-toggle__label { line-height: 1; }
-
-/* =========================================================================
-   Motion — respect reduced-motion. Shadows are decoration; every state is
-   still readable via color + inset without animation.
+   Motion — respect reduced-motion.
    ========================================================================= */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
