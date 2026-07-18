@@ -30,10 +30,13 @@ def main() -> int:
     email = sys.argv[1]
     password = sys.argv[2] if len(sys.argv) > 2 else getpass.getpass("Password: ")
 
-    env = dotenv_values(".env")
-    db_url = env.get("CASELINE_DATABASE_URL")
+    # Prefer an injected env var (e.g. under `railway run` / inside the deploy,
+    # which targets the PROD database); fall back to local .env for dev.
+    db_url = os.environ.get("CASELINE_DATABASE_URL") or dotenv_values(".env").get(
+        "CASELINE_DATABASE_URL"
+    )
     if not db_url:
-        print("CASELINE_DATABASE_URL not set in .env", file=sys.stderr)
+        print("CASELINE_DATABASE_URL not set (env or .env)", file=sys.stderr)
         return 1
 
     db = Database(db_url)
