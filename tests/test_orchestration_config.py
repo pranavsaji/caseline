@@ -37,6 +37,25 @@ def test_config_update_reaches_next_call_via_cache_invalidation(v1_client, firm)
     assert after["script"]["practice_area"] == "personal injury"
 
 
+def test_llm_choice_from_studio_reaches_the_agent(v1_client, firm):
+    # The full model-picker path: Studio PUTs llm_config, and the /v1/agent-config
+    # the voice worker fetches on every call must report that exact spec under
+    # `llm.providers` — the value agent.py hands to build_llm(). Empty by default
+    # (worker env fallback); non-empty once chosen.
+    before = v1_client.get("/v1/agent-config", headers=firm["headers"]).json()
+    assert before["llm"]["providers"] == ""  # default -> worker CASELINE_LLM_PROVIDERS
+
+    r = v1_client.put(
+        f"/v1/agents/{firm['agent_id']}/config",
+        json={"llm_config": {"providers": "anthropic:claude-haiku-4-5"}},
+        headers=firm["headers"],
+    )
+    assert r.status_code == 200
+
+    after = v1_client.get("/v1/agent-config", headers=firm["headers"]).json()
+    assert after["llm"]["providers"] == "anthropic:claude-haiku-4-5"
+
+
 def test_invalid_config_is_rejected_before_persisting(v1_client, firm):
     r = v1_client.put(
         f"/v1/agents/{firm['agent_id']}/config",

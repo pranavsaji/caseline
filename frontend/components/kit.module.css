@@ -129,6 +129,29 @@
   pointer-events: none;
   color: var(--muted);
 }
+/* Password reveal: eye toggle sits inside the field's right edge. */
+.inputWrap { position: relative; display: flex; align-items: center; }
+.inputWrap .control { padding-right: 40px; }
+.revealBtn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.revealBtn:hover { color: var(--text); }
+.revealBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* Validation state: red inset ring without a hard border. */
 .controlInvalid { box-shadow: var(--nm-pressed), inset 0 0 0 1.5px var(--bad); }
 .hint { font-size: 12px; color: var(--muted); }
