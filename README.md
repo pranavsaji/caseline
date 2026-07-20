@@ -21,7 +21,7 @@ AI intake employee for law firms. Answers calls in a natural voice, qualifies le
 |---|---|
 | Transport | LiveKit (Cloud SIP inbound trunk from Twilio/Telnyx) |
 | Agent framework | LiveKit Agents (Python), cascading pipeline |
-| STT / LLM / TTS | Deepgram Nova-3 / DeepSeek V3 (`deepseek-chat`, chosen on cost; Anthropic/OpenAI one env entry away) / Cartesia Sonic-3 — each stage behind a health-check-driven failover stack (`CASELINE_{STT,LLM,TTS}_PROVIDERS`) |
+| STT / LLM / TTS | Deepgram Nova-3 / DeepSeek V3 (`deepseek-chat`, chosen on cost; Anthropic/OpenAI one env entry away) / Cartesia Sonic-3.5 — each stage behind a health-check-driven failover stack (`CASELINE_{STT,LLM,TTS}_PROVIDERS`) |
 | Turn-taking | Silero VAD + multilingual semantic end-of-utterance model |
 | Backend | FastAPI; Postgres (RLS multi-tenancy) + append-only events outbox |
 | Session state | Redis (in-memory fallback for local dev) |

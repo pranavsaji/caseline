@@ -11,7 +11,7 @@ Env (single-entry lists mean "no failover", the Phase 0/1 behavior):
 
   CASELINE_STT_PROVIDERS=deepgram:nova-3[,openai:whisper-1]
   CASELINE_LLM_PROVIDERS=groq:llama-3.3-70b-versatile[,deepseek:deepseek-chat]
-  CASELINE_TTS_PROVIDERS=cartesia:sonic-3[,openai:tts-1]
+  CASELINE_TTS_PROVIDERS=cartesia:sonic-3.5[,openai:tts-1]
 
 Provider names appear here and in config only (cross-phase rule). The
 ``ProviderStack`` tracks which instance is currently serving so turn metrics
@@ -72,7 +72,7 @@ DEFAULTS = {
     # text ("<function=...>"). FunctionCallStripper still guards every model.
     # Keys via ANTHROPIC_API_KEY / DEEPSEEK_API_KEY.
     "llm": "anthropic:claude-haiku-4-5,deepseek:deepseek-v4-flash",
-    "tts": "cartesia:sonic-3",
+    "tts": "cartesia:sonic-3.5",
 }
 
 _AVAILABILITY_EVENTS = (
@@ -384,7 +384,9 @@ def _build_tts(provider: str, model: str, voice_id: str | None) -> object:
                 )
 
         base = _GuardedCartesiaTTS(
-            model=model or "sonic-3",
+            # Cartesia's current model. sonic-2 is being sunset (2026-10-20) and a
+            # bare "sonic-3" is not a distinct model id, so pin the latest explicitly.
+            model=model or "sonic-3.5",
             voice=voice,
             http_session=_cartesia_http_session(),
         )

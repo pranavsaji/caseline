@@ -56,7 +56,7 @@ campaign), not code.
 | **Agent framework** | LiveKit Agents (Python), **cascading** STT→LLM→TTS pipeline | Transport + agents from one vendor; strongest integrated turn-taking. Cascading (not speech-to-speech) is a deliberate decision — see §4. |
 | **STT** | Deepgram **Nova-3** | ~150 ms time-to-first-token, streaming, strong on telephony audio, supports keyword/entity boosting (legal terms, firm names). |
 | **LLM (voice hot path)** | **Per-firm selectable** from a 13-provider catalog. Default **Anthropic `claude-haiku-4-5`** (primary) + DeepSeek `deepseek-v4-flash` (failover) | The voice LLM is no longer a fixed env value — each firm picks `provider:model` in the Config Studio (`agents.llm_config`), applied to the next call via the same short-TTL config cache. Claude Haiku 4.5 is the default: the most natural fast-tier conversationalist and a **reliable native tool-caller**. Groq's `llama-3.3-70b` (the earlier default, measured 376 ms median TTFT) was dropped because it **leaked tool calls as literal text** (`<function=…>`) and often failed to actually run them. Catalog spans Anthropic, OpenAI, Google Gemini, DeepSeek, Groq, xAI, Mistral, Together, Fireworks, OpenRouter, Perplexity, Cerebras, and local Ollama — each behind an env-key check that the UI surfaces as "not configured". |
-| **TTS** | Cartesia **Sonic-3** | 40–95 ms first chunk, streaming, supports per-firm cloned voices. A guarded stream adapter buffers text into sentences and calls Cartesia's reliable bytes path (the token-by-token websocket returns zero audio frames under the AgentSession), skips punctuation-only segments, and falls back to a stable default voice for any non-UUID (mock/half-provisioned) voice id. |
+| **TTS** | Cartesia **Sonic-3.5** | 40–95 ms first chunk, streaming, supports per-firm cloned voices. A guarded stream adapter buffers text into sentences and calls Cartesia's reliable bytes path (the token-by-token websocket returns zero audio frames under the AgentSession), skips punctuation-only segments, and falls back to a stable default voice for any non-UUID (mock/half-provisioned) voice id. |
 | **Turn-taking** | Silero VAD (pre-warmed) + a multilingual semantic end-of-utterance model | Semantic endpointing beats raw silence timers — silence-only either cuts callers off or leaves dead air. `min_endpointing_delay ≈ 0.4 s`. |
 | **Backend** | **FastAPI** (Python ≥3.12), app-factory pattern | Confirmed target stack; async-native, typed with Pydantic v2. |
 | **System of record** | **Postgres 16** with **row-level security** multi-tenancy + append-only `events` outbox | RLS enforced from the first migration is the tenant-isolation guarantee; the outbox decouples the hot path from CMS/analytics. |
@@ -598,7 +598,7 @@ LIVEKIT_SIP_URI=                          # the PROJECT-ID SIP subdomain the car
 CASELINE_STT_PROVIDERS=deepgram:nova-3
 # Default voice LLM: primary,failover. Firms can override per-agent in the Config Studio.
 CASELINE_LLM_PROVIDERS=anthropic:claude-haiku-4-5,deepseek:deepseek-v4-flash
-CASELINE_TTS_PROVIDERS=cartesia:sonic-3
+CASELINE_TTS_PROVIDERS=cartesia:sonic-3.5
 CARTESIA_VOICE_ID=                        # per-firm branded voice; empty = provider default
 # LLM provider keys — adding a key unlocks that provider in the Config Studio picker; a
 # provider whose key is missing shows as "not configured". (ANTHROPIC/OPENAI/GEMINI/DEEPSEEK/

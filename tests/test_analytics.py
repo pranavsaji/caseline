@@ -104,7 +104,7 @@ def test_latency_analytics_by_day_and_provider(v1_client, firm):
                 "call_id": "an-lat", "speech_id": f"s{i}", "eou_delay_ms": 120,
                 "llm_ttft_ms": 250, "tts_ttfb_ms": 150, "total_ms": ms,
                 "stt_provider": "deepgram:nova-3", "llm_provider": llm,
-                "tts_provider": "cartesia:sonic-3",
+                "tts_provider": "cartesia:sonic-3.5",
             },
             headers=firm["headers"],
         )
