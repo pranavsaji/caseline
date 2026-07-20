@@ -7,7 +7,31 @@ import base64
 import httpx
 import pytest
 
-from api.voice import CartesiaVoiceCloneProvider, MockVoiceCloneProvider, VoiceCloneError
+from api.voice import (
+    CartesiaVoiceCloneProvider,
+    MockVoiceCloneProvider,
+    VoiceCloneError,
+    make_voice_clone_provider,
+)
+
+
+def test_clone_provider_selection(monkeypatch):
+    # The production footgun: a Cartesia key present but the provider not
+    # explicitly turned on used to yield the mock cloner, whose fake
+    # `mock-voice-…` ids the TTS stage rejects — so a "successful" clone never
+    # spoke. Key presence alone must now select the real provider.
+    monkeypatch.delenv("CASELINE_VOICE_CLONE_PROVIDER", raising=False)
+    monkeypatch.setenv("CARTESIA_API_KEY", "sk-test")
+    assert isinstance(make_voice_clone_provider(), CartesiaVoiceCloneProvider)
+
+    # Explicit opt-out still forces the mock even with a key present.
+    monkeypatch.setenv("CASELINE_VOICE_CLONE_PROVIDER", "mock")
+    assert isinstance(make_voice_clone_provider(), MockVoiceCloneProvider)
+
+    # No key -> mock (local/dev default, no network).
+    monkeypatch.delenv("CASELINE_VOICE_CLONE_PROVIDER", raising=False)
+    monkeypatch.delenv("CARTESIA_API_KEY", raising=False)
+    assert isinstance(make_voice_clone_provider(), MockVoiceCloneProvider)
 
 SAMPLE_URI = "https://firm-assets.example.com/partner-voice-sample.wav"
 # A tiny inline sample, as the browser recorder/uploader sends it.

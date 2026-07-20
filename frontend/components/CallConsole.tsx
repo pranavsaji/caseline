@@ -6,7 +6,7 @@
 // posting to the BFF route handlers (/api/calls/dial, /api/preview).
 
 import { useEffect, useState } from "react";
-import { PhoneOutgoing, PlayCircle } from "lucide-react";
+import { PhoneOutgoing, PhoneOff, PlayCircle } from "lucide-react";
 import type { DialResult, PreviewResult } from "@/lib/api";
 import Card from "@/components/Card";
 import SoftButton from "@/components/SoftButton";
@@ -48,6 +48,8 @@ export default function CallConsole() {
   const [dialing, setDialing] = useState(false);
   const [dialResult, setDialResult] = useState<DialResult | null>(null);
   const [dialError, setDialError] = useState<string | null>(null);
+  const [hangingUp, setHangingUp] = useState(false);
+  const [ended, setEnded] = useState(false);
 
   // simulate state
   const [callerScript, setCallerScript] = useState(SAMPLE_CALLER);
@@ -66,6 +68,7 @@ export default function CallConsole() {
     setDialing(true);
     setDialError(null);
     setDialResult(null);
+    setEnded(false);
     try {
       const normalized = normalizeE164(toNumber);
       if (!normalized) {
@@ -83,6 +86,23 @@ export default function CallConsole() {
       setDialError(String(err));
     } finally {
       setDialing(false);
+    }
+  }
+
+  async function hangUp() {
+    if (!dialResult) return;
+    setHangingUp(true);
+    try {
+      const res = await fetch(`/api/calls/${encodeURIComponent(dialResult.call_id)}/hangup`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "hangup failed");
+      setEnded(true);
+    } catch (err) {
+      setDialError(String(err));
+    } finally {
+      setHangingUp(false);
     }
   }
 
@@ -140,7 +160,7 @@ export default function CallConsole() {
             onChange={(e) => setPurpose(e.target.value)}
           />
         </div>
-        <div className="formRow">
+        <div className="formRow" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <SoftButton
             variant="primary"
             onClick={placeCall}
@@ -148,6 +168,13 @@ export default function CallConsole() {
           >
             <PhoneOutgoing size={16} aria-hidden /> {dialing ? "Dialing…" : "Place call"}
           </SoftButton>
+          {/* End a live call from the dashboard. Shown once a real call is
+              placed (a dry-run has no room to tear down) until it's ended. */}
+          {dialResult?.placed && !ended ? (
+            <SoftButton variant="danger" onClick={hangUp} disabled={hangingUp}>
+              <PhoneOff size={16} aria-hidden /> {hangingUp ? "Ending…" : "End call"}
+            </SoftButton>
+          ) : null}
         </div>
         {dialError ? (
           <div className="formRow">
@@ -169,6 +196,11 @@ export default function CallConsole() {
                 <a href={`/calls/${encodeURIComponent(dialResult.call_id)}`}>
                   {dialResult.call_id}
                 </a>
+                {ended ? (
+                  <Pill tone="muted" dot>
+                    ended
+                  </Pill>
+                ) : null}
               </div>
               {dialResult.note ? (
                 <p style={{ margin: "8px 0 0" }}>{dialResult.note}</p>

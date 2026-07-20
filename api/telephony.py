@@ -23,6 +23,13 @@ class OutboundDialer(ABC):
     def dial(self, to_number: str, room_name: str, metadata: dict | None = None) -> str:
         """Place an outbound call; returns a provider call/participant id."""
 
+    def hangup(self, room_name: str) -> bool:
+        """End a live call by tearing down its room. Default no-op (the logging
+        dialer never placed a real call); returns True if a real hangup was
+        performed. Best-effort — a call that already ended is a success, not an
+        error, so the operator's End button is idempotent."""
+        return False
+
 
 class LoggingDialer(OutboundDialer):
     name = "logging"
@@ -72,6 +79,27 @@ class LiveKitSIPDialer(OutboundDialer):
                 await lk.aclose()
 
         return asyncio.run(_place())
+
+    def hangup(self, room_name: str) -> bool:
+        # Deleting the room disconnects every participant — the SIP leg (the
+        # callee's phone) and the agent worker — which ends the call cleanly.
+        # A room that's already gone raises; treat that as already-ended.
+        import asyncio
+
+        from livekit import api  # type: ignore[import-not-found]
+
+        async def _delete() -> bool:
+            lk = api.LiveKitAPI(self._url, self._key, self._secret)
+            try:
+                await lk.room.delete_room(api.DeleteRoomRequest(room=room_name))
+                return True
+            except Exception as exc:  # already ended / unknown room
+                logger.info("hangup: room %s not deleted (%s)", room_name, exc)
+                return False
+            finally:
+                await lk.aclose()
+
+        return asyncio.run(_delete())
 
 
 def make_dialer() -> OutboundDialer:

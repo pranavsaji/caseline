@@ -19,10 +19,14 @@ def _seed_funnel(v1_client, firm):
         },
         headers=h,
     )
+    # Book a real open slot from the calendar rather than a hardcoded date —
+    # a fixed timestamp silently falls into the past and schedule_consult
+    # rejects it, so the funnel would show 0 consults booked.
+    slot = v1_client.get("/v1/tools/available_slots", headers=h).json()["slots"][0]
     v1_client.post(
         "/v1/tools/schedule_consult",
         json={"call_id": "an-1", "name": "A One", "phone": "+15125550201",
-              "slot_iso": "2026-07-20T10:00:00"},
+              "slot_iso": slot["slot_iso"]},
         headers=h,
     )
     v1_client.post(

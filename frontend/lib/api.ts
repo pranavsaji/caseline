@@ -296,6 +296,12 @@ export const dialCall = (body: {
 }) =>
   api("/v1/calls/dial", { method: "POST", body: JSON.stringify(body) }) as Promise<DialResult>;
 
+export type HangupResult = { status: "ended" | "already_ended"; call_id: string };
+
+// Operator hang up: tear down the call's LiveKit room (ends the SIP leg + agent).
+export const hangupCall = (callId: string) =>
+  api(`/v1/calls/${encodeURIComponent(callId)}/hangup`, { method: "POST" }) as Promise<HangupResult>;
+
 // Browser voice test: server mints a LiveKit token; the browser joins the room
 // and talks to the intake agent over WebRTC (no phone, no telephony charge).
 export type WebSession = {

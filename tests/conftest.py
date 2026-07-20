@@ -24,7 +24,10 @@ for _var in (
     "CASELINE_PUBSUB_TOPIC",
     # Voice cloning: keep tests on MockVoiceCloneProvider even when a dev .env
     # points at real Cartesia — otherwise clone tests make live HTTP calls.
+    # make_voice_clone_provider now auto-selects Cartesia on key presence, so
+    # blank the key too (blanking the flag alone is no longer enough).
     "CASELINE_VOICE_CLONE_PROVIDER",
+    "CARTESIA_API_KEY",
 ):
     os.environ[_var] = ""
 

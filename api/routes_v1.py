@@ -659,6 +659,35 @@ def set_call_outcome(
     return {"status": "updated", "call_id": call_id, "outcome": outcome}
 
 
+@router.post("/calls/{call_id}/hangup")
+def hangup_call(
+    call_id: str,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Operator-initiated hang up of a live call from the dashboard. Tears down
+    the call's LiveKit room, which disconnects the SIP leg and the agent. The
+    `call_id` is the room name (see `dial_call`). Scoped to the firm: you can
+    only end your own firm's calls. Idempotent — ending an already-ended call
+    still returns 200, so the End button never errors on a race."""
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        row = conn.execute(
+            "SELECT id FROM calls WHERE id = %s", (call_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Call not found")
+    ended = p.dialer.hangup(call_id)
+    with p.db.firm(firm.firm_id) as conn:
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "call.hangup_requested",
+            {"call_id": call_id, "ended": ended, "dialer": p.dialer.name},
+        )
+    return {"status": "ended" if ended else "already_ended", "call_id": call_id}
+
+
 @router.get("/leads")
 def list_leads(
     request: Request, limit: int = 50, firm: auth.AuthedFirm = Depends(auth.require_firm)

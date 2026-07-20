@@ -249,7 +249,19 @@ class CartesiaVoiceCloneProvider(VoiceCloneProvider):
 def make_voice_clone_provider() -> VoiceCloneProvider:
     import os
 
+    # Auto-select Cartesia whenever its key is present — same "credentials imply
+    # the real provider" rule as make_sms_provider. The mock cloner returns fake
+    # `mock-voice-…` ids that are not valid Cartesia voice ids, so the TTS stage
+    # rejects them and every call silently reverts to the default voice: a clone
+    # that "succeeds" but never speaks. Requiring an explicit flag to turn the
+    # real provider ON made that the default failure mode in any environment
+    # where the flag was forgotten (it was, in prod). Set
+    # CASELINE_VOICE_CLONE_PROVIDER=mock to force the no-network mock even when a
+    # key is present (tests do this via conftest).
+    provider = os.getenv("CASELINE_VOICE_CLONE_PROVIDER", "").strip().lower()
     api_key = os.getenv("CARTESIA_API_KEY")
-    if os.getenv("CASELINE_VOICE_CLONE_PROVIDER", "").lower() == "cartesia" and api_key:
+    if provider == "mock":
+        return MockVoiceCloneProvider()
+    if api_key and provider in ("", "cartesia"):
         return CartesiaVoiceCloneProvider(api_key)
     return MockVoiceCloneProvider()

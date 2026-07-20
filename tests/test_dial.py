@@ -49,3 +49,34 @@ def test_dial_rejects_non_e164(v1_client, firm):
 def test_dial_requires_auth(v1_client):
     r = v1_client.post("/v1/calls/dial", json={"to_number": "+14155550123"})
     assert r.status_code in (401, 403)
+
+
+def test_hangup_ends_call_and_is_idempotent(v1_client, firm):
+    # Place a (dry-run) call, then hang it up from the dashboard. The default
+    # LoggingDialer never held a real room, so hangup reports "already_ended" —
+    # but the endpoint succeeds and emits the event.
+    placed = v1_client.post(
+        "/v1/calls/dial",
+        json={"to_number": "+14155550123"},
+        headers=firm["headers"],
+    ).json()
+    call_id = placed["call_id"]
+
+    r = v1_client.post(f"/v1/calls/{call_id}/hangup", headers=firm["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "already_ended"  # LoggingDialer: nothing to tear down
+    assert r.json()["call_id"] == call_id
+
+    # Idempotent: a second hangup on the same call still succeeds.
+    again = v1_client.post(f"/v1/calls/{call_id}/hangup", headers=firm["headers"])
+    assert again.status_code == 200
+
+
+def test_hangup_unknown_call_is_404(v1_client, firm):
+    r = v1_client.post("/v1/calls/outbound-manual-doesnotexist/hangup", headers=firm["headers"])
+    assert r.status_code == 404
+
+
+def test_hangup_requires_auth(v1_client):
+    r = v1_client.post("/v1/calls/outbound-manual-x/hangup")
+    assert r.status_code in (401, 403)
