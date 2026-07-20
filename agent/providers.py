@@ -255,10 +255,24 @@ _LLM_MODEL_SUGGESTIONS = {
 }
 
 
+def _is_configured(provider: str, key_env: str) -> bool:
+    """Whether this provider can actually serve a call from this environment.
+
+    For hosted providers that means their API key is set. Ollama is the
+    exception: it needs no key, so a naive "no key required -> ready" check
+    marks it usable everywhere — including production, where there is no Ollama
+    server in the container and selecting it silently breaks every call. It
+    counts as configured only when explicitly pointed at a reachable server.
+    """
+    if provider == "ollama":
+        return bool(os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_HOST"))
+    return bool(key_env) and bool(os.getenv(key_env))
+
+
 def llm_catalog() -> list[dict]:
-    """Provider catalog for the config UI: label, env key, whether that key is
-    present in this process's env, and default + suggested models. Safe to call
-    from the API (no livekit import)."""
+    """Provider catalog for the config UI: label, what it requires, whether that
+    requirement is satisfied in this process's env, and default + suggested
+    models. Safe to call from the API (no livekit import)."""
     catalog = []
     for provider, (key_env, default_model, _connector) in _LLM_REGISTRY.items():
         catalog.append(
@@ -266,7 +280,10 @@ def llm_catalog() -> list[dict]:
                 "provider": provider,
                 "label": _LLM_LABELS.get(provider, provider),
                 "env_key": key_env or None,
-                "key_present": (not key_env) or bool(os.getenv(key_env)),
+                # What the operator has to set for this provider to work — shown
+                # in the UI so "not configured" is actionable rather than a dead end.
+                "requires": key_env or ("OLLAMA_BASE_URL" if provider == "ollama" else None),
+                "configured": _is_configured(provider, key_env),
                 "default_model": default_model,
                 "models": _LLM_MODEL_SUGGESTIONS.get(provider, [default_model]),
             }

@@ -74,7 +74,7 @@ export default function ModelManager() {
           }
         } else if (list.length) {
           // Default the picker to the first provider that already has a key.
-          const seed = list.find((p) => p.key_present) ?? list[0];
+          const seed = list.find((p) => p.configured) ?? list[0];
           setPrimary({ provider: seed.provider, model: seed.default_model });
         }
       })
@@ -119,9 +119,12 @@ export default function ModelManager() {
   const spec = buildSpec(primary, fallbackOn ? fallback : null);
   const primaryEntry = byProvider[primary.provider];
   const fallbackEntry = byProvider[fallback.provider];
-  const missingKey =
-    (primary.provider && primaryEntry && !primaryEntry.key_present ? primaryEntry : null) ||
-    (fallbackOn && fallback.provider && fallbackEntry && !fallbackEntry.key_present
+  // Normally unreachable — unconfigured providers can't be picked. It still
+  // fires for a config saved before its key was removed, or one written
+  // directly through the API.
+  const unconfigured =
+    (primary.provider && primaryEntry && !primaryEntry.configured ? primaryEntry : null) ||
+    (fallbackOn && fallback.provider && fallbackEntry && !fallbackEntry.configured
       ? fallbackEntry
       : null);
 
@@ -160,10 +163,14 @@ export default function ModelManager() {
           onChange={(e) => pickProvider(slot, e.target.value)}
         >
           <option value="">Select…</option>
+          {/* Unconfigured providers stay visible (so you can see what's on
+              offer) but are not selectable — picking one would break every
+              call. Ollama lands here in production: it needs no API key, but
+              there is no Ollama server to reach. */}
           {catalog.map((p) => (
-            <option key={p.provider} value={p.provider}>
+            <option key={p.provider} value={p.provider} disabled={!p.configured}>
               {p.label}
-              {p.key_present ? "" : " — no key"}
+              {p.configured ? "" : " — not configured"}
             </option>
           ))}
         </SoftSelect>
@@ -219,11 +226,11 @@ export default function ModelManager() {
         </div>
       ) : null}
 
-      {missingKey ? (
-        <Notice tone="warn" title={`${missingKey.label} has no API key`}>
-          Add <code>{missingKey.env_key}</code> to the worker&apos;s <code>.env</code> and
-          restart it. Until then, calls fall back to the next configured provider
-          (or the worker default).
+      {unconfigured ? (
+        <Notice tone="warn" title={`${unconfigured.label} is not configured`}>
+          Set <code>{unconfigured.requires}</code> on the worker and restart it before
+          selecting {unconfigured.label}. Until then, calls fall back to the next
+          configured provider (or the worker default).
         </Notice>
       ) : null}
 

@@ -122,7 +122,12 @@ export type LlmProvider = {
   provider: string;
   label: string;
   env_key: string | null;
-  key_present: boolean;
+  /** What the operator must set for this provider to work (API key env var, or
+   *  OLLAMA_BASE_URL for a local Ollama server). */
+  requires: string | null;
+  /** Whether that requirement is satisfied — i.e. this provider can actually
+   *  serve a call. Unconfigured providers are shown but not selectable. */
+  configured: boolean;
   default_model: string;
   models: string[];
 };
