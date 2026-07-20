@@ -337,6 +337,13 @@ export const createVoiceProfile = (body: {
   description?: string;
 }) => api("/v1/voice-profiles", { method: "POST", body: JSON.stringify(body) });
 
+export type DeleteVoiceResult = { status: string; voice_profile_id: string; cleared_agent_voice: boolean };
+
+// Remove a cloned voice profile. If it was the agent's current voice, the
+// backend clears that assignment (next call reverts to the default).
+export const deleteVoiceProfile = (id: string) =>
+  api(`/v1/voice-profiles/${encodeURIComponent(id)}`, { method: "DELETE" }) as Promise<DeleteVoiceResult>;
+
 // Assign a voice to the agent: either a cloned profile or a preset voice id.
 export const assignAgentVoice = (
   agentId: string,

@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import uuid
 from abc import ABC, abstractmethod
 
 import httpx
@@ -131,6 +132,13 @@ class VoiceCloneProvider(ABC):
         """Preset/library voices the firm can pick alongside its own clones.
         Each entry: ``{id, name, description, language, gender}``. Default: none."""
         return []
+
+    def delete_voice(self, provider_voice_id: str) -> bool:
+        """Delete a cloned voice from the provider. Best-effort: returns True if
+        the provider confirmed deletion, False otherwise. The default no-op suits
+        providers/ids with nothing to clean up (mock, library presets). Deleting
+        the local profile row never depends on this succeeding."""
+        return False
 
     def close(self) -> None:  # pragma: no cover - default no-op
         pass
@@ -241,6 +249,24 @@ class CartesiaVoiceCloneProvider(VoiceCloneProvider):
             for v in r.json().get("data", [])
         ]
         return [v for v in voices if v["id"] and v["name"]]
+
+    def delete_voice(self, provider_voice_id: str) -> bool:
+        # Best-effort provider-side cleanup. A non-UUID id (a mock/half-provisioned
+        # clone) was never a real Cartesia voice, so skip the call. A 404 means
+        # it's already gone — also a success from the caller's point of view.
+        try:
+            uuid.UUID(str(provider_voice_id))
+        except (ValueError, TypeError):
+            return False
+        try:
+            r = self._client.delete(f"/voices/{provider_voice_id}")
+            if r.status_code == 404:
+                return True
+            r.raise_for_status()
+            return True
+        except httpx.HTTPError as exc:
+            logger.warning("Cartesia delete voice %s failed: %s", provider_voice_id, exc)
+            return False
 
     def close(self) -> None:
         self._client.close()

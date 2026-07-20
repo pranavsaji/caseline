@@ -47,6 +47,10 @@ export default function VoiceManager() {
   const [library, setLibrary] = useState<LibraryVoice[]>([]);
   const [currentVoiceId, setCurrentVoiceId] = useState<string | null>(null);
   const [assigning, setAssigning] = useState(false);
+  // Two-step delete: first click arms the row, second click confirms — no
+  // blocking browser dialog.
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [consent, setConsent] = useState(false);
@@ -212,6 +216,33 @@ export default function VoiceManager() {
     }
   }
 
+  async function deleteProfile(p: VoiceProfile) {
+    setDeletingId(p.id);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/voice-profiles/${encodeURIComponent(p.id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "delete failed");
+      // If the deleted voice was the agent's current one, the backend cleared
+      // the assignment — reflect that so the picker doesn't show a dangling id.
+      if (data.cleared_agent_voice) setCurrentVoiceId(null);
+      setMsg({
+        tone: "ok",
+        text: data.cleared_agent_voice
+          ? `Deleted “${p.name}”. It was in use, so the agent reverted to the default voice.`
+          : `Deleted “${p.name}”.`,
+      });
+      await refresh();
+    } catch (e) {
+      setMsg({ tone: "bad", text: String(e) });
+    } finally {
+      setDeletingId(null);
+      setConfirmDelete(null);
+    }
+  }
+
   // Picker option values are prefixed so a cloned profile assigns by its
   // profile id (works even for mock/non-UUID ids) and a library voice by its
   // raw provider voice id.
@@ -231,16 +262,45 @@ export default function VoiceManager() {
       key: "assign",
       header: "",
       align: "right",
-      render: (p) =>
-        p.status === "ready" && agentId ? (
-          <SoftButton size="sm" disabled={assigning} onClick={() => setAgentVoice({ voice_profile_id: p.id })}>
-            {currentVoiceId && p.provider_voice_id === currentVoiceId ? "In use" : "Use"}
-          </SoftButton>
-        ) : p.error ? (
-          <span style={{ color: "var(--bad-ink)", fontSize: 12 }}>{p.error}</span>
-        ) : (
-          "—"
-        ),
+      render: (p) => {
+        const inUse = Boolean(currentVoiceId && p.provider_voice_id === currentVoiceId);
+        const arming = confirmDelete === p.id;
+        return (
+          <div style={{ display: "inline-flex", gap: 6, alignItems: "center", justifyContent: "flex-end" }}>
+            {p.status === "ready" && agentId ? (
+              <SoftButton size="sm" disabled={assigning} onClick={() => setAgentVoice({ voice_profile_id: p.id })}>
+                {inUse ? "In use" : "Use"}
+              </SoftButton>
+            ) : p.error ? (
+              <span style={{ color: "var(--bad-ink)", fontSize: 12 }}>{p.error}</span>
+            ) : null}
+            {arming ? (
+              <>
+                <SoftButton
+                  size="sm"
+                  variant="danger"
+                  disabled={deletingId === p.id}
+                  onClick={() => deleteProfile(p)}
+                >
+                  {deletingId === p.id ? "Deleting…" : inUse ? "Delete (in use)" : "Confirm delete"}
+                </SoftButton>
+                <SoftButton size="sm" disabled={deletingId === p.id} onClick={() => setConfirmDelete(null)}>
+                  Cancel
+                </SoftButton>
+              </>
+            ) : (
+              <SoftButton
+                size="sm"
+                aria-label={`Delete ${p.name}`}
+                title="Delete voice"
+                onClick={() => setConfirmDelete(p.id)}
+              >
+                <Trash2 size={14} aria-hidden />
+              </SoftButton>
+            )}
+          </div>
+        );
+      },
     },
   ];
 

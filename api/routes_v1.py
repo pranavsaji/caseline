@@ -1325,6 +1325,58 @@ def list_voice_profiles(
     return [{**r, "id": str(r["id"]), "created_at": str(r["created_at"])} for r in rows]
 
 
+@router.delete("/voice-profiles/{profile_id}")
+def delete_voice_profile(
+    profile_id: str,
+    request: Request,
+    firm: auth.AuthedFirm = Depends(auth.require_firm),
+) -> dict:
+    """Remove a cloned voice profile. If the agent is currently speaking in this
+    voice, its assignment is cleared first (the next call reverts to the platform
+    default) so deleting an in-use voice can never mute callers. Best-effort
+    provider-side deletion; the local row is removed regardless. Firm-scoped."""
+    p = _platform(request)
+    with p.db.firm(firm.firm_id) as conn:
+        profile = conn.execute(
+            "SELECT id, name, provider_voice_id FROM voice_profiles WHERE id = %s",
+            (profile_id,),
+        ).fetchone()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Voice profile not found")
+
+    provider_voice_id = profile["provider_voice_id"]
+
+    # If this voice is the agent's current voice, clear it before deleting so no
+    # call is left pointing at a voice that no longer exists.
+    cleared_agent_voice = False
+    if provider_voice_id:
+        config = load_agent_config(p.db, p.session_store, firm.firm_id)
+        if config is not None and config.voice_id == provider_voice_id:
+            update_agent_config(
+                p.db, p.session_store, firm.firm_id, config.agent_id, voice_id=""
+            )
+            cleared_agent_voice = True
+
+    # Best-effort provider cleanup, then remove the local row unconditionally.
+    if provider_voice_id:
+        try:
+            p.voice_cloner.delete_voice(provider_voice_id)
+        except Exception as exc:  # never block local deletion on a provider hiccup
+            logger.warning("provider voice delete failed for %s: %s", profile_id, exc)
+
+    with p.db.firm(firm.firm_id) as conn:
+        conn.execute("DELETE FROM voice_profiles WHERE id = %s", (profile_id,))
+        platform_events.emit(
+            conn,
+            firm.firm_id,
+            "voice.profile_deleted",
+            {"voice_profile_id": profile_id, "name": profile["name"],
+             "cleared_agent_voice": cleared_agent_voice},
+        )
+    return {"status": "deleted", "voice_profile_id": profile_id,
+            "cleared_agent_voice": cleared_agent_voice}
+
+
 @router.get("/voice-library")
 def list_voice_library(
     request: Request, firm: auth.AuthedFirm = Depends(auth.require_firm)

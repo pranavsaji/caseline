@@ -142,6 +142,52 @@ def test_ready_voice_assigns_to_agent_and_reaches_agent_config(v1_client, firm):
     assert config["voice_id"] == profile["provider_voice_id"]
 
 
+def test_delete_voice_profile_removes_it(v1_client, firm):
+    profile = create_profile(v1_client, firm).json()
+    pid = profile["voice_profile_id"]
+    r = v1_client.delete(f"/v1/voice-profiles/{pid}", headers=firm["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "deleted"
+    assert r.json()["cleared_agent_voice"] is False
+    assert v1_client.get("/v1/voice-profiles", headers=firm["headers"]).json() == []
+
+
+def test_delete_in_use_voice_clears_agent_assignment(v1_client, firm):
+    # Deleting the voice the agent currently speaks in must clear the assignment
+    # so the next call reverts to the default rather than pointing at a gone voice.
+    profile = create_profile(v1_client, firm).json()
+    v1_client.post(
+        f"/v1/agents/{firm['agent_id']}/voice",
+        json={"voice_profile_id": profile["voice_profile_id"]},
+        headers=firm["headers"],
+    )
+    assert v1_client.get("/v1/agent-config", headers=firm["headers"]).json()["voice_id"]
+
+    r = v1_client.delete(
+        f"/v1/voice-profiles/{profile['voice_profile_id']}", headers=firm["headers"]
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["cleared_agent_voice"] is True
+    # Agent voice is cleared -> reverts to platform default.
+    assert not v1_client.get("/v1/agent-config", headers=firm["headers"]).json()["voice_id"]
+
+
+def test_delete_unknown_voice_is_404(v1_client, firm):
+    import uuid as _uuid
+    r = v1_client.delete(f"/v1/voice-profiles/{_uuid.uuid4()}", headers=firm["headers"])
+    assert r.status_code == 404
+
+
+def test_cannot_delete_another_firms_voice(v1_client, firm, second_firm):
+    profile = create_profile(v1_client, firm).json()
+    # RLS hides it from firm B, so the delete 404s and firm A's row survives.
+    r = v1_client.delete(
+        f"/v1/voice-profiles/{profile['voice_profile_id']}", headers=second_firm["headers"]
+    )
+    assert r.status_code == 404
+    assert len(v1_client.get("/v1/voice-profiles", headers=firm["headers"]).json()) == 1
+
+
 def test_non_ready_voice_cannot_be_assigned(v1_client, firm, db):
     with db.firm(firm["firm_id"]) as conn:
         row = conn.execute(
