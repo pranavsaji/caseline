@@ -147,9 +147,17 @@ def _booked_slots(ctx: ToolContext, tz: ZoneInfo, after: datetime) -> set[dateti
     return {r["slot_at"].astimezone(tz).replace(second=0, microsecond=0) for r in rows}
 
 
-def _generate_slots(ctx: ToolContext, days: int, max_slots: int) -> list[datetime]:
+def _generate_slots(
+    ctx: ToolContext, days: int, max_slots: int, max_per_day: int = 2
+) -> list[datetime]:
     """Open, bookable slots from the firm's business hours (firm tz), excluding
-    already-booked times and anything too soon."""
+    already-booked times and anything too soon.
+
+    Slots are spread across the window (at most ``max_per_day`` per day) rather
+    than filling the first day, so availability visibly covers the coming weeks
+    — a caller/tester on any weekday this month still sees real open times. The
+    agent only *offers* two or three (per its scheduling instruction); the wider
+    set is what keeps the calendar bookable throughout the window."""
     tz = _firm_tz(ctx)
     now = datetime.now(tz)
     hours = ctx.config.business_hours or _DEFAULT_BUSINESS_HOURS
@@ -157,6 +165,7 @@ def _generate_slots(ctx: ToolContext, days: int, max_slots: int) -> list[datetim
     out: list[datetime] = []
     for d in range(days + 1):
         day = now + timedelta(days=d)
+        day_slots: list[datetime] = []
         for start, end in hours.get(_DAY_KEYS[day.weekday()], []):
             sh, sm = (int(x) for x in start.split(":"))
             eh, em = (int(x) for x in end.split(":"))
@@ -164,8 +173,13 @@ def _generate_slots(ctx: ToolContext, days: int, max_slots: int) -> list[datetim
             end_dt = day.replace(hour=eh, minute=em, second=0, microsecond=0)
             while cur + timedelta(minutes=_SLOT_MINUTES) <= end_dt:
                 if cur >= now + _MIN_LEAD and cur.replace(second=0, microsecond=0) not in booked:
-                    out.append(cur)
+                    day_slots.append(cur)
                 cur += timedelta(minutes=_SLOT_MINUTES)
+        # A morning and an afternoon option beats two adjacent hours.
+        if len(day_slots) > max_per_day:
+            step = max(1, len(day_slots) // max_per_day)
+            day_slots = day_slots[::step][:max_per_day]
+        out.extend(day_slots)
         if len(out) >= max_slots:
             break
     return sorted(out)[:max_slots]
@@ -175,10 +189,10 @@ def _fmt_slot(dt: datetime) -> str:
     return dt.strftime("%A, %B %-d at %-I:%M %p")
 
 
-def available_slots(ctx: ToolContext, days: int = 14, max_slots: int = 6) -> dict:
+def available_slots(ctx: ToolContext, days: int = 30, max_slots: int = 12) -> dict:
     """Real consultation availability: bookable slots from the firm's business
-    hours minus what's already booked. The agent offers these instead of
-    accepting any time the caller names."""
+    hours minus what's already booked, spread across the next ~month. The agent
+    offers a couple of these instead of accepting any time the caller names."""
     slots = _generate_slots(ctx, days, max_slots)
     return {
         "slots": [{"slot_iso": s.isoformat(), "label": _fmt_slot(s)} for s in slots],

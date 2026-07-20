@@ -32,12 +32,18 @@ all four:
 The voice agent is the center of gravity — realism, latency, and reliability at telephony scale
 are the hard part. Everything else is known engineering built to protect that hot path.
 
-**Current status:** Phases 0–4 are code-complete and verified under a **217-test** suite
-(29 test files). The system has been run live end-to-end on real provider APIs (Deepgram STT,
-Cartesia TTS, Groq LLM), deployed to the cloud (backend + agent on Railway US-West, dashboard
-on Vercel), and load-tested at 50 concurrent calls with zero duplicate writes. The only open
-items across every phase are external-account provisioning (a purchased Twilio number → SIP
-trunk, a real Clio sandbox, a Cartesia clone key), not code.
+**Current status:** Phases 0–4 are code-complete and verified under a **257-test** suite
+(31 test files). The system has been run live end-to-end on real provider APIs (Deepgram STT,
+Cartesia TTS, and a live conversational LLM), deployed to the cloud (backend + agent on Railway
+US-West, dashboard on Vercel), and load-tested at 50 concurrent calls with zero duplicate writes.
+Since the first cut it has also grown a **login-gated operator dashboard** (dashboard-user
+accounts, PBKDF2 + signed session cookie), a **per-firm LLM model picker** (a 13-provider catalog
+selectable in the Config Studio, applied to the next call with no worker restart), **Plivo** as a
+first-class voice+SMS provider alongside Twilio, and an explicit **10DLC send-gate** for outbound
+SMS. The public marketing experience now lives at `/` and the dashboard proper at `/dashboard`.
+The remaining open items across every phase are external-account provisioning (a purchased
+Twilio/Plivo number → SIP trunk, a real Clio sandbox, a Cartesia clone key, an approved A2P 10DLC
+campaign), not code.
 
 ---
 
@@ -45,25 +51,28 @@ trunk, a real Clio sandbox, a Cartesia clone key), not code.
 
 | Layer | Choice | Why this choice |
 |---|---|---|
-| **Transport / telephony** | LiveKit (Cloud SIP inbound trunk fed by a Twilio/Telnyx number) | One media plane serves **both** WebRTC (web widget) and SIP (phone), so the same agent worker handles both. Apache-2.0, self-hostable on GKE later, ships SIP trunking, PSTN bridging, noise cancellation, per-turn latency metrics, and recording out of the box. |
+| **Transport / telephony** | LiveKit (Cloud SIP inbound trunk fed by a **Plivo** or Twilio/Telnyx number) | One media plane serves **both** WebRTC (web widget) and SIP (phone), so the same agent worker handles both. Apache-2.0, self-hostable on GKE later, ships SIP trunking, PSTN bridging, noise cancellation, per-turn latency metrics, and recording out of the box. Plivo (voice + SMS) is the currently-provisioned carrier; the inbound trunk originates to the LiveKit Cloud SIP URI and a Zentrunk outbound trunk carries the lead-chaser's dial-out. |
 | **Agent framework** | LiveKit Agents (Python), **cascading** STT→LLM→TTS pipeline | Transport + agents from one vendor; strongest integrated turn-taking. Cascading (not speech-to-speech) is a deliberate decision — see §4. |
 | **STT** | Deepgram **Nova-3** | ~150 ms time-to-first-token, streaming, strong on telephony audio, supports keyword/entity boosting (legal terms, firm names). |
-| **LLM (voice hot path)** | Groq **`llama-3.3-70b-versatile`** (primary), DeepSeek `deepseek-chat` (failover) | Chosen after a live cost/latency sweep: **measured median TTFT 376 ms** (vs DeepSeek's 748 ms warm, which alone ate ~93% of the 800 ms budget), ~2.5¢/call. Provider is one env entry — Anthropic/OpenAI swap in without a rewrite. |
-| **TTS** | Cartesia **Sonic-3** | 40–95 ms first chunk, streaming, supports per-firm cloned voices. |
+| **LLM (voice hot path)** | **Per-firm selectable** from a 13-provider catalog. Default **Anthropic `claude-haiku-4-5`** (primary) + DeepSeek `deepseek-v4-flash` (failover) | The voice LLM is no longer a fixed env value — each firm picks `provider:model` in the Config Studio (`agents.llm_config`), applied to the next call via the same short-TTL config cache. Claude Haiku 4.5 is the default: the most natural fast-tier conversationalist and a **reliable native tool-caller**. Groq's `llama-3.3-70b` (the earlier default, measured 376 ms median TTFT) was dropped because it **leaked tool calls as literal text** (`<function=…>`) and often failed to actually run them. Catalog spans Anthropic, OpenAI, Google Gemini, DeepSeek, Groq, xAI, Mistral, Together, Fireworks, OpenRouter, Perplexity, Cerebras, and local Ollama — each behind an env-key check that the UI surfaces as "not configured". |
+| **TTS** | Cartesia **Sonic-3** | 40–95 ms first chunk, streaming, supports per-firm cloned voices. A guarded stream adapter buffers text into sentences and calls Cartesia's reliable bytes path (the token-by-token websocket returns zero audio frames under the AgentSession), skips punctuation-only segments, and falls back to a stable default voice for any non-UUID (mock/half-provisioned) voice id. |
 | **Turn-taking** | Silero VAD (pre-warmed) + a multilingual semantic end-of-utterance model | Semantic endpointing beats raw silence timers — silence-only either cuts callers off or leaves dead air. `min_endpointing_delay ≈ 0.4 s`. |
 | **Backend** | **FastAPI** (Python ≥3.12), app-factory pattern | Confirmed target stack; async-native, typed with Pydantic v2. |
 | **System of record** | **Postgres 16** with **row-level security** multi-tenancy + append-only `events` outbox | RLS enforced from the first migration is the tenant-isolation guarantee; the outbox decouples the hot path from CMS/analytics. |
-| **Session state** | **Redis** (in-memory fallback for local dev) | A call in flight lives here, never on the Postgres hot path. |
+| **Session state** | **Redis** (in-memory fallback for local dev) | A call in flight (and the per-firm agent-config cache) lives here, never on the Postgres hot path. |
 | **CMS sync** | Async worker behind a `CaseManagementProvider` interface — Clio, Filevine, Litify, + mock | Swapping CMS is config, not a rewrite; writes are idempotent and event-driven. |
-| **Dashboard** | **Next.js 15** (App Router) + **React 19** (TypeScript) | Firm-facing console + config studio + a cinematic marketing landing. |
-| **Marketing landing** | Vanilla **Three.js 0.171** (WebGL), GSAP, Lenis, Framer Motion | Cinematic `/experience` page, rendered imperatively (React-three-fiber does not render reliably here). |
-| **Compliance** | PII redaction pipeline, per-state recording consent, 2-layer guardrails (regex + inline classifier) | Legal intake captures PHI-adjacent data; redaction is at write-time, guardrails sit in-pipeline before TTS. |
+| **Dashboard** | **Next.js 15** (App Router) + **React 19** (TypeScript), **login-gated** | Firm-facing console + config studio + cinematic landing. Every route except the marketing landing and auth screens sits behind a signed-session-cookie middleware gate. |
+| **Dashboard auth** | PBKDF2-HMAC-SHA256 (200k iters, stdlib) password hashes in `dashboard_users`; signed HTTP-only session cookie minted by the Next server | Operator sign-in is **login-only — no self-serve signup** (accounts are provisioned by `scripts/create_dashboard_user.py`). Raw passwords transit only browser→Next→backend; the browser only ever holds the session cookie. |
+| **Marketing landing** | Vanilla **Three.js 0.171** (WebGL), GSAP, Lenis, Framer Motion | Cinematic experience now served at **`/`** (with `/experience` forwarding to it), rendered imperatively (React-three-fiber does not render reliably here). It renders no firm data, so it is the one unauthenticated page. |
+| **Compliance** | PII redaction pipeline, per-state recording consent, 2-layer guardrails (regex + inline classifier), 10DLC SMS send-gate | Legal intake captures PHI-adjacent data; redaction is at write-time, guardrails sit in-pipeline before TTS. Outbound SMS is gated by `CASELINE_SMS_ENABLED` (read by both API and agent) because a US long code can't legally send until its A2P 10DLC campaign is approved — invisible from config, so it's an explicit switch. |
 | **Infra (written, not applied)** | Terraform + Helm for GKE / Cloud SQL / Memorystore / Pub-Sub / GCS / KMS (`deploy/`) | Production blueprint; cloud apply is blocked on a GCP account only. |
 | **Live cloud (running)** | Railway (backend + agent, US-West), Vercel (dashboard) | Proven deployment; region-pinned to shave transport RTT (~80–145 ms). |
 
 **Python deps** (`pyproject.toml`): `fastapi`, `uvicorn[standard]`, `httpx`, `pydantic`,
-`livekit-agents[deepgram,anthropic,cartesia,silero,turn-detector,openai]`, `psycopg[binary]` +
-`psycopg-pool`, `redis`, `cryptography`. Dev: `pytest`, `pytest-asyncio`. Managed with **uv**.
+`python-dotenv`, `livekit-agents[deepgram,anthropic,cartesia,silero,turn-detector,openai]`,
+`psycopg[binary]` + `psycopg-pool`, `redis`, `cryptography`. Dev: `pytest`, `pytest-asyncio`.
+Managed with **uv**. (Provider plugins load lazily — only the LLM/STT/TTS vendors actually
+configured are imported; OpenAI-compatible providers reuse the `openai` plugin with a `base_url`.)
 
 **Frontend deps** (`frontend/package.json`): `next@15`, `react@19`, `three@0.171`, `gsap`,
 `lenis`, `framer-motion`, `livekit-client`, `lucide-react`, TypeScript 5.
@@ -110,7 +119,7 @@ The per-turn budget (end of caller speech → first audio back):
 |---|---|---|
 | Network / transport (WebRTC or SIP) | 20–60 ms | Wideband Opus over WebRTC; PSTN adds jitter |
 | Streaming STT (first useful partial) | 60–120 ms | Deepgram Nova-3 class |
-| LLM first token | 100–250 ms | Small fast model + prompt caching (Groq measured 376 ms median) |
+| LLM first token | 100–250 ms | Fast-tier model + prompt caching (Claude Haiku 4.5 default; Groq's `llama-3.3` measured 376 ms median before it was dropped for tool-call leakage) |
 | TTS first chunk | 40–100 ms | Cartesia Sonic-class streaming |
 | Orchestration overhead | 20–80 ms | Turn detection, guardrails, buffering |
 
@@ -118,6 +127,17 @@ A naive pipeline lands ~1.2–1.4 s p95; a tuned one ~500–650 ms p95. **≤800
 ceiling** in Caseline — every call's per-stage breakdown is stitched and rolled up
 (`agent/latency.py`, `GET /v1/metrics/calls/{id}`, dashboard). The single biggest mistake —
 batch transcription — is banned; every layer streams.
+
+**Per-turn stages captured** (migration `0005` surfaced the two that used to be invisible):
+
+| Field | Counts toward `total_ms`? | Source |
+|---|---|---|
+| `eou_delay_ms` — end-of-utterance delay | Yes | `EOUMetrics.end_of_utterance_delay` |
+| ↳ `stt_ms` — STT-finalization slice of the EOU delay | No (a **breakdown of** EOU, not additive) | `EOUMetrics.transcription_delay` |
+| `llm_ttft_ms` — LLM time-to-first-token | Yes | `LLMMetrics.ttft` |
+| `guardrail_ms` — regex-screen CPU between LLM and TTS | No (an overhead diagnostic, best-effort) | timed in `IntakeAgent.llm_node`, keyed by `current_speech.id` |
+| `tts_ttfb_ms` — TTS time-to-first-byte | Yes | `TTSMetrics.ttfb` |
+| **`total_ms`** (budget 800 ms p95) | = `eou + llm_ttft + tts_ttfb` | — |
 
 ### 4.2 Cascading vs speech-to-speech — a decision, not a default
 
@@ -153,10 +173,12 @@ pinning of STT/LLM/TTS to the SFU region.
 
 ```
 agent/                      # LiveKit Agents voice worker (the hot path)
-  agent.py                  #   pipeline wiring, typed tools, guardrail LLM→TTS pass
-  providers.py              #   STT/LLM/TTS failover stacks (FallbackAdapter, provider labels)
+  agent.py                  #   pipeline wiring, typed tools, guardrail LLM→TTS pass, immediate
+                            #     TTS greeting, end_call tool, current-date anchoring, LLM warmup
+  providers.py              #   STT/LLM/TTS failover stacks + the 13-provider LLM catalog/registry,
+                            #     the guarded Cartesia TTS, provider labels for metrics
   backend_client.py         #   HTTP client (Phase 0 + /v1 modes; livekit-free, unit-testable)
-  latency.py                #   per-turn latency stitching + p50/p95 (livekit-free)
+  latency.py                #   per-turn latency stitching + p50/p95 incl. stt_ms/guardrail_ms
   s2s.py                    #   evidence-gated speech-to-speech greeting decision
 
 api/                        # FastAPI core platform
@@ -171,8 +193,10 @@ api/                        # FastAPI core platform
   tools/                    #   typed tool layer (deterministic; the LLM only selects/parameterizes)
   orchestration/            #   per-firm config + threads brain + 2-layer guardrails + classifier
   compliance/               #   PII redaction, per-state consent, TCPA outbound policy
-  messaging/                #   SMS + email provider seams (Twilio / SMTP / logging)
-  platform/                 #   db+RLS, migrations, events outbox, auth, secrets, alerts, session_state
+  messaging/                #   SMS + email provider seams (Plivo / Twilio / SMTP / logging;
+                            #     auto-selected by which creds are set) + the 10DLC send-gate
+  platform/                 #   db+RLS, migrations (0001–0007), events outbox, auth (service tokens),
+                            #     dashboard_auth (operator login, PBKDF2), secrets, alerts, session_state
 
 integrations/               # CaseManagementProvider ABC + normalized schema
   base.py, models.py        #   the interface + normalized Lead/Contact/Matter/Task/Note
@@ -188,10 +212,14 @@ frontend/                   # Next.js dashboard + config studio + cinematic land
 deploy/                     # Terraform (GCP) + Helm chart — written, not applied
 compliance/                 # SOC 2 groundwork, vendor inventory, security-review checklist
 scripts/onboard_firm.py     # CLI onboarding (firm + agent + service token)
+scripts/create_dashboard_user.py  # provisions a dashboard operator account (login-only; no signup)
+scripts/seed_demo_data.py   # idempotent demo rows for Threads/Referrals/Tuning + booked consults
 scripts/load_test.py        # 50-concurrent-call load test + end-state duplicate audit
 scripts/s2s_benchmark.py    # cascaded vs realtime time-to-first-audio harness
+scripts/plivo_trunk_setup.sh / twilio_trunk_setup.sh  # SIP inbound/outbound trunk provisioning
 scripts/dev_db.sh           # boots a dedicated local Postgres cluster on :5455
-tests/                      # 29 pytest files (~217 tests) incl. ephemeral-Postgres RLS
+tests/                      # 33 pytest files (~253 tests) incl. ephemeral-Postgres RLS,
+                            #   dashboard-auth, LLM-catalog, and managed-Postgres-auth coverage
 ```
 
 ---
@@ -202,8 +230,10 @@ All `/v1` routes are firm-scoped (Bearer service token) except `/v1/admin/*` (ad
 Tools are the actions the LLM can invoke; everything else is dashboard/webhook/ops surface.
 
 **Admin & config**
-`POST /v1/admin/firms` · `GET /v1/agent-config` · `PUT /v1/agents/{id}/config` ·
-`GET /v1/agents` · `POST /v1/agents/{id}/preview` (zero-side-effect config test-drive)
+`POST /v1/admin/firms` · `POST /v1/admin/firms/{id}/tokens` · `GET /v1/agent-config` ·
+`PUT /v1/agents/{id}/config` (script/routing/**`llm_config`**/voice) · `GET /v1/agents` ·
+`POST /v1/agents/{id}/preview` (zero-side-effect config test-drive) ·
+`GET /v1/llm-providers` (13-provider catalog with per-provider `configured` / `not configured` flag)
 
 **Typed tools (LLM-callable, deterministic)**
 `POST /v1/tools/lookup_caller` · `qualify_lead` · `schedule_consult` · `transfer_to_human` ·

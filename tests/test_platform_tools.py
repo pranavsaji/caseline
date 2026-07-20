@@ -20,6 +20,19 @@ def test_available_slots_returns_open_business_hours(v1_client, firm):
     assert all("slot_iso" in s and "label" in s for s in slots)
 
 
+def test_available_slots_spread_across_multiple_days(v1_client, firm):
+    # Availability should span the coming weeks (a tester any day this month
+    # sees open times), not pile onto the first day. With the default window and
+    # a couple of slots per day, several distinct calendar days must appear.
+    slots = v1_client.get("/v1/tools/available_slots", headers=firm["headers"]).json()["slots"]
+    days = {s["slot_iso"][:10] for s in slots}
+    assert len(days) >= 3, f"slots clustered on too few days: {sorted(days)}"
+    # And no single day hogs the list (max_per_day guard).
+    from collections import Counter
+    per_day = Counter(s["slot_iso"][:10] for s in slots)
+    assert max(per_day.values()) <= 3
+
+
 def test_schedule_consult_rejects_taken_slot_with_alternatives(v1_client, firm):
     slot = v1_client.get("/v1/tools/available_slots", headers=firm["headers"]).json()["slots"][0]
     ok = v1_client.post(
