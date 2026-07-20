@@ -8,7 +8,8 @@ latency instrumentation and tenant isolation are built in from the first migrati
 is how that employee is built; [`BUSINESS.md`](BUSINESS.md) is the case for hiring it.*
 
 This document is the engineering reference: what the system is, the exact stack, how each part
-works and **why it was chosen**, the design rules, and how to run it. For the business/value
+works and **why it was chosen**, the design rules, and how to run it. For a plain-language
+"what it is" overview see [`OVERVIEW.md`](OVERVIEW.md); for the business/value
 narrative see [`BUSINESS.md`](BUSINESS.md); for the phased build history and progress see
 [`plan.md`](plan.md); for the original design blueprint see
 [`caseline-voice-intake-architecture.md`](caseline-voice-intake-architecture.md).
@@ -241,10 +242,19 @@ Tools are the actions the LLM can invoke; everything else is dashboard/webhook/o
 
 **Calls & metrics**
 `POST /v1/calls/complete` · `POST /v1/calls/{id}/transcript` · `POST /v1/calls/dial` (outbound) ·
-`POST /v1/calls/web-session` · `POST /v1/metrics/turn` · `GET /v1/metrics/calls/{id}` ·
-`GET /v1/calls` · `GET /v1/calls/{id}`
+`POST /v1/calls/web-session` · `POST /v1/calls/{id}/hangup` (operator teardown — deletes the
+LiveKit room; idempotent) · `POST /v1/calls/{id}/outcome` (manual disposition override) ·
+`POST /v1/metrics/turn` · `GET /v1/metrics/calls/{id}` · `GET /v1/calls` (each row carries a
+derived `booked` flag) · `GET /v1/calls/{id}`
 
 **Data reads** `GET /v1/leads` · `/consults` · `/messages` · `/events`
+
+> **Booking is a distinct signal from qualification.** A booked consult lives in `consults` and
+> never touched `calls.outcome`, so qualified-and-booked calls used to show only "qualified".
+> `GET /calls` now derives `booked` via an `EXISTS` on the linked consult, `GET /calls/{id}`
+> returns `booked` + `consult_slot_at`, and `/analytics/outcomes` reports both a lead-level
+> `booking_rate` (consults ÷ qualified leads) and a call-level `call_booking_rate` (booked calls
+> ÷ total calls) so booked calls no longer hide inside the "qualified" bucket.
 
 **Omnichannel (Phase 3)**
 `POST /v1/hooks/leads` (webform → chaser) · `POST /v1/hooks/sms` (inbound reply → thread) ·
@@ -270,7 +280,7 @@ Tools are the actions the LLM can invoke; everything else is dashboard/webhook/o
 
 ## 7. Data model & multi-tenancy
 
-20 tables across 4 migrations. Every tenant row carries `firm_id`; **Postgres row-level
+21 tables across 7 migrations. Every **tenant** row carries `firm_id`; **Postgres row-level
 security** is set from migration `0001` and verified by tests that run cross-tenant queries as
 the app role.
 
@@ -281,6 +291,12 @@ the app role.
 - **Omnichannel (0003):** `threads`, `followups`
 - **Differentiation (0004):** `voice_profiles`, `lead_reviews`, `referral_partners`,
   `referrals` — same RLS + grants posture as every other tenant table, cross-tenant tested
+- **Turn latency (0005):** `turn_metrics.stt_ms`, `turn_metrics.guardrail_ms` (nullable columns)
+- **LLM selection (0006):** `agents.llm_config jsonb` — the per-firm `provider:model` spec; empty
+  `{}` means "use the worker default", so existing agents are unaffected
+- **Dashboard users (0007):** `dashboard_users` (`email`, PBKDF2 `password_hash`) — deliberately
+  **global, not RLS-scoped**: it's operator access-control infrastructure like `schema_migrations`
+  and `firm_tokens`, not per-tenant business data, so it lives on the platform role
 
 `events` is the append-only audit log **and** the integration outbox — one table, two jobs.
 `idempotency_keys` is what makes every external write safe to retry.
@@ -300,8 +316,11 @@ the app role.
 4. **Every external write carries an idempotency key.** *Why:* retries can never duplicate a
    matter or double-book a consult — proven under the 50-call load test with forced duplicates.
 5. **Providers live behind interfaces** (STT/LLM/TTS/SMS/CMS/voice-clone). *Why:* providers get
-   swapped mid-life on price/latency/deprecation — the LLM swap from Anthropic → DeepSeek → Groq
-   was a config-only change that proved the seam.
+   swapped mid-life on price/latency/deprecation — the voice LLM has already moved
+   Anthropic → DeepSeek → Groq → **back to Anthropic Claude Haiku 4.5** as tool-calling reliability
+   and cost/latency shifted, each a config-only change. That seam is now **exposed to the firm**:
+   the LLM is selectable per-agent (`agents.llm_config`) from a 13-provider catalog in the Config
+   Studio, not just an operator env value.
 6. **Guardrails in-pipeline, two layers.** A regex screen plus an inline lexical classifier
    (catches paraphrases) sit between LLM and TTS and block legal advice, fee quotes, and outcome
    guarantees — **p95 < 5 ms, perf-gated in tests**; the classifier is behind a Protocol seam an
@@ -324,7 +343,37 @@ the app role.
 **Provider failover (`agent/providers.py`).** STT/LLM/TTS each sit behind a `FallbackAdapter`
 built from a comma-separated `provider:model` spec (primary first). A health-check-driven stack
 fails over mid-call to a secondary provider on slowdown/error — the argument for cascading over
-S2S. Provider labels flow into latency metrics so you can slice p95 by provider.
+S2S. Provider labels flow into latency metrics so you can slice p95 by provider. An LLM spec whose
+API key is absent is **skipped, not fatal**, so a not-yet-configured primary degrades to the next
+provider instead of crashing the worker on every call.
+
+**LLM model picker (`agent/providers.py` `_LLM_REGISTRY` + `llm_catalog()`).** One registry row per
+provider — `(env key, default model, connector)` — is the single source of truth for the 13
+supported vendors (Anthropic, OpenAI, Google Gemini, DeepSeek, Groq, xAI, Mistral, Together,
+Fireworks, OpenRouter, Perplexity, Cerebras, local Ollama). The *connector* tells `_build_llm` how
+to construct the client: the native Anthropic/OpenAI plugin, an `openai`-plugin `with_*` helper, or
+an OpenAI-compatible `base_url`. Adding a provider is a row here plus its `.env` key — no other
+code. `GET /v1/llm-providers` serves this as a catalog (label, what it `requires`, whether that
+requirement is `configured` in this process's env, default + suggested models) so the Config Studio
+can show unconfigured providers as "not configured" and disable them (Ollama counts as configured
+only when explicitly pointed at a reachable server). A firm's pick is stored in `agents.llm_config`
+and reaches the worker through the normal config load; the worker builds the stack from that spec
+and falls back to the env default (`anthropic:claude-haiku-4-5,deepseek:deepseek-v4-flash`) for an
+empty `{}`. Claude gets `caching="ephemeral"` on the stable system-prompt + tool-schema prefix — the
+single biggest per-turn LLM-latency lever.
+
+**Agent conversational behavior (`agent/agent.py`).** The greeting is spoken **immediately** via
+`session.say()` with a fixed opening line (firm name + agent name + AI disclosure + optional
+recording disclosure) — not `generate_reply()`, which ran a full system-prompt LLM call and left
+~20 s of silence callers talked over; first-audio dropped to ~3 s. A warmup task absorbs the
+primary LLM's cold-start cost while that greeting plays. The system prompt is anchored to the real
+**current date/time in the firm's timezone** so the model resolves "today"/"a few hours ago" to a
+correct ISO date (a same-day accident was being stamped a year off, tripping the SOL gate). An
+`end_call` tool lets the agent hang up after goodbye: it drains playout, speaks the farewell
+non-interruptibly, then deletes the LiveKit room (firing transcript flush + CMS drain). A streaming
+`FunctionCallStripper` in `llm_node` deletes any tool call a model emits as literal text
+(`<function=…>`) before it can be spoken — defense-in-depth on top of choosing a reliable native
+tool-caller.
 
 **Qualification engine (`api/qualification.py`).** Pure functions: a statute-of-limitations gate
 (730 days), refer-out injury rules, decisions with human-readable reasons. Unparseable/future
@@ -352,7 +401,11 @@ clients. The config studio's preview runs the exact same brain with **zero side 
 
 **Phase 4 differentiation.** Voice cloning (`api/voice.py`) is consent-gated at API + DB CHECK,
 only `ready` profiles are assignable, assignment invalidates the config cache so the next call
-speaks the firm's voice. Qualification tuning (`api/tuning.py`) turns attorney accept/reject
+speaks the firm's voice. (Fix, b2c8767: the provider now **auto-selects Cartesia whenever
+`CARTESIA_API_KEY` is set** — the old behavior silently fell back to the mock provider, whose
+non-UUID `mock-voice-…` ids the TTS stage rejects, so a "successful" clone never actually spoke;
+force the no-network mock with `CASELINE_VOICE_CLONE_PROVIDER=mock`, and re-clone any pre-existing
+mock profiles.) Qualification tuning (`api/tuning.py`) turns attorney accept/reject
 verdicts into an engine-vs-attorney confusion matrix and advisory rule suggestions (sample-gated
 5+, threshold-gated 80%) — **a human applies them through the same validated config PUT**. Smart
 referrals route `refer_out` (viable but declined) cases to registered partner firms via an
@@ -368,25 +421,42 @@ Tailwind, no CSS-in-JS**. `three@0.171` (landing WebGL), `framer-motion`, `gsap`
 (smooth scroll), `livekit-client` (browser voice), `lucide-react` (icons). `next.config.mjs` is
 empty; the project is linked to Vercel (`.vercel/project.json`, git-ignored).
 
+**Access gate (`frontend/middleware.ts`).** Every request except the marketing landing (`/`,
+`/experience`) and the auth surface (`/login`, `/signup`, `/api/auth/*`) requires a valid **signed
+session cookie** (`frontend/lib/session.ts`): unauthenticated page loads redirect to `/login?next=…`,
+unauthenticated `/api/*` calls get a clean `401` JSON. Login posts to `/api/auth/login`, which
+calls the backend `verify_user` (PBKDF2), and on success the Next server sets the HTTP-only session
+cookie — **raw passwords only ever transit browser→Next→backend**. Self-serve signup is disabled
+(`/signup` 307s to `/login`); accounts come from `scripts/create_dashboard_user.py`.
+
 **Architecture — server-first with a BFF token boundary.** List/analytics pages are React Server
 Components (`dynamic = "force-dynamic"`) that fetch through `frontend/lib/api.ts`, a
 **server-only** client. Two auth scopes: `api()` sends the firm Bearer token, `adminApi()` sends
 the admin token; both read from env and **never reach the browser** (`cache: "no-store"`).
 Interactive client components never call the backend directly — they POST to thin proxy route
-handlers under `frontend/app/api/*` (dial, web-session/LiveKit token, config PUT, preview, lead
-review, referral send/status, voice-profiles, partner register, dead-letter replay), which call
+handlers under `frontend/app/api/*` (auth login/logout/me, dial, hangup, call-outcome,
+web-session/LiveKit token, config PUT, preview, lead review, tuning apply, referral send/status,
+voice-profiles/voice-library, partner register, dead-letter replay, llm-providers), which call
 `lib/api.ts` server-side so the token stays put. `adminEnabled` hides admin surfaces when no
 admin token is set.
 
-**Dashboard pages** (rendered inside `AppShell`): `/` intake overview (answer-speed p95, consults
-booked, qualification rate, recent calls/leads with inline attorney `LeadReview`) · `/calls`
-(WebVoiceConsole browser test + CallConsole outbound/simulate) · `/calls/[id]` (transcript,
-per-turn latency table, recording) · `/threads` + `/threads/[id]` (omnichannel + speed-to-lead) ·
-`/analytics` (funnel, outcomes, latency by day/provider, peer benchmarks) · `/tuning`
-(engine-vs-attorney confusion matrix + advisory suggestions) · `/referrals` (referrals + partner
-network + `PartnerForm`) · `/studio` (config studio + zero-side-effect test-call preview +
-`VoiceManager`) · `/config` (raw JSON power-editor with live validation) · `/ops` (messages,
-event log, admin queue/alerts/DLQ/onboarding).
+**Routing:** the public **cinematic landing now lives at `/`** (server page → client
+`ExperienceRoot`; `/experience` forwards to it) and the **dashboard root moved to `/dashboard`**.
+`ShellGate` strips the dashboard chrome (sidebar + aurora) for the landing and auth screens and
+wraps everything else in `AppShell` (sidebar nav: Overview `/dashboard`, Calls, Threads, Analytics,
+Tuning, Referrals, Studio, Ops, Config).
+
+**Dashboard pages** (rendered inside `AppShell`): `/dashboard` intake overview (answer-speed p95,
+consults booked, qualification rate, recent calls/leads with inline attorney `LeadReview`) ·
+`/calls` (WebVoiceConsole browser test + CallConsole outbound/simulate; per-call operator hang-up
+and `CallDisposition` outcome override) · `/calls/[id]` (transcript, per-turn latency table incl.
+STT/guardrail slices, recording, "Qualified · Consult booked" signal) · `/threads` +
+`/threads/[id]` (omnichannel + speed-to-lead) · `/analytics` (funnel, outcomes incl. call-booking
+rate, latency by day/provider, peer benchmarks) · `/tuning` (engine-vs-attorney confusion matrix +
+advisory suggestions, `ApplyTuningRules`) · `/referrals` (referrals + partner network +
+`PartnerForm`) · `/studio` (config studio + zero-side-effect test-call preview + `VoiceManager` +
+`ModelManager`, the per-firm LLM picker) · `/config` (raw JSON power-editor with live validation) ·
+`/ops` (messages, event log, admin queue/alerts/DLQ/onboarding) · `/login` + `/signup` (auth).
 
 **Design language:** futuristic **dark glassmorphism over a live WebGL aurora** (dark-only
 "Aurora" theme). The kit evolved from the earlier neomorphic system — the token *names*
@@ -396,8 +466,9 @@ electric-violet companion (`#9d7bff`). Fonts: Space Grotesk (display), Inter (bo
 Mono. `AuroraBackground` is a raw WebGL2 fragment-shader aurora on the dashboard; full
 `prefers-reduced-motion` handling everywhere with CSS fallbacks.
 
-**Cinematic landing (`/experience`):** `ShellGate` strips the dashboard chrome so it renders
-full-bleed. The scene is **vanilla Three.js** (`components/experience/webgl/VoiceScene.ts`) —
+**Cinematic landing (served at `/`, with `/experience` forwarding to it):** `ShellGate` strips the
+dashboard chrome so it renders full-bleed, and because it renders no firm data it is the one
+unauthenticated page. The scene is **vanilla Three.js** (`components/experience/webgl/VoiceScene.ts`) —
 deliberately not react-three-fiber, whose reconciler doesn't commit reliably under Next 15 /
 React 19, so Three.js is driven imperatively: a noise-displaced fresnel "voice orb", two particle
 layers, a scroll-driven camera spline, `UnrealBloomPass` post-processing, ACES tone mapping,
@@ -422,7 +493,7 @@ platform/dashboard.
 ```bash
 uv sync                       # creates .venv and installs everything
 cp .env.example .env          # fill in what you need (see comments)
-uv run pytest -v              # 217 tests: RLS isolation, guardrails, idempotency, e2e, ...
+uv run pytest -v              # 253 tests: RLS isolation, guardrails, idempotency, auth, e2e, ...
 ```
 
 The suite boots its own throwaway Postgres to verify RLS cross-tenant isolation — no external
@@ -451,14 +522,19 @@ uv run python -m agent.agent download-files   # one-time: turn-detector + VAD mo
 uv run python -m agent.agent console          # local mic/speaker, no telephony
 uv run python -m agent.agent dev              # connect to LiveKit, take real calls
 
-# 5. Dashboard
+# 5. Dashboard operator account (login-only — there is no self-serve signup)
+uv run python scripts/create_dashboard_user.py you@firm.com   # prompts for a password
+
+# 6. Dashboard (the landing is at `/`; the dashboard proper is at `/dashboard`, behind login)
 cd frontend && npm install
 CASELINE_API_URL=http://localhost:8000 CASELINE_FIRM_TOKEN=cl_... npm run dev
 ```
 
-**Telephony (marquee demo):** buy a Twilio number, point it at a LiveKit Cloud SIP inbound
-trunk, add a dispatch rule that routes to this agent (architecture doc §7.3;
-`deploy/sip-outbound-trunk.md`; `scripts/twilio_trunk_setup.sh`).
+**Telephony (marquee demo):** buy a **Plivo** or Twilio number, point its inbound trunk at the
+LiveKit Cloud SIP URI (`LIVEKIT_SIP_URI`), add a dispatch rule that routes to this agent, and (for
+the lead-chaser's dial-out) create a LiveKit outbound trunk over Plivo Zentrunk. See
+`deploy/plivo-trunk.md`, `deploy/sip-outbound-trunk.md`, and
+`scripts/plivo_trunk_setup.sh` / `scripts/twilio_trunk_setup.sh`.
 
 ### 11.3 Try the omnichannel layer (Phase 3)
 
@@ -518,29 +594,41 @@ realistic-load failure.
 
 ```
 LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_SIP_URI=                          # the PROJECT-ID SIP subdomain the carrier originates to
 CASELINE_STT_PROVIDERS=deepgram:nova-3
-CASELINE_LLM_PROVIDERS=groq:llama-3.3-70b-versatile,deepseek:deepseek-chat   # primary,failover
+# Default voice LLM: primary,failover. Firms can override per-agent in the Config Studio.
+CASELINE_LLM_PROVIDERS=anthropic:claude-haiku-4-5,deepseek:deepseek-v4-flash
 CASELINE_TTS_PROVIDERS=cartesia:sonic-3
 CARTESIA_VOICE_ID=                        # per-firm branded voice; empty = provider default
+# LLM provider keys — adding a key unlocks that provider in the Config Studio picker; a
+# provider whose key is missing shows as "not configured". (ANTHROPIC/OPENAI/GEMINI/DEEPSEEK/
+# GROQ/XAI/MISTRAL/TOGETHER/FIREWORKS/OPENROUTER/PERPLEXITY/CEREBRAS_API_KEY; Ollama needs none.)
+ANTHROPIC_API_KEY=  / OPENAI_API_KEY=  / DEEPSEEK_API_KEY=  / ...
 CASELINE_DATABASE_URL=                    # Postgres; migrations apply on boot
 CASELINE_REDIS_URL=                       # empty = in-memory session fallback (local dev)
 CASELINE_RATE_LIMIT_PER_MINUTE=300
 CASELINE_DB_POOL_SIZE=4
 CASELINE_WORKER_BATCH_SIZE=20
 CASELINE_ALERT_INTERVAL_SECONDS=60
+# Outbound SMS carrier is auto-selected: Plivo if its pair is set, else Twilio, else logged.
+PLIVO_AUTH_ID= / PLIVO_AUTH_TOKEN= / PLIVO_FROM_NUMBER=
+TWILIO_ACCOUNT_SID= / TWILIO_AUTH_TOKEN= / TWILIO_FROM_NUMBER=
+CASELINE_SMS_ENABLED=true                 # master send-gate; set false until A2P 10DLC clears
 CASELINE_SMTP_HOST= / _PORT=587 / _FROM=intake@caseline.app
-CASELINE_SIP_OUTBOUND_TRUNK_ID=
+CASELINE_SIP_OUTBOUND_TRUNK_ID=           # LiveKit outbound trunk for the lead-chaser dial-out
+PLIVO_SIP_TERMINATION= / PLIVO_SIP_USERNAME= / PLIVO_SIP_PASSWORD=   # Zentrunk outbound
 CASELINE_S2S_GREETING=                    # opt-in flag for the evidence-gated S2S greeting
 ```
-Secrets (provider API keys, `CASELINE_SECRETS_KEY`, `CASELINE_ADMIN_TOKEN`, firm tokens, Twilio
-creds) live in `.env` locally and the platform secret store in the cloud — never in the app DB
-in plaintext (CMS credentials are encrypted with the secrets key / KMS).
+Secrets (provider API keys, `CASELINE_SECRETS_KEY`, `CASELINE_ADMIN_TOKEN`, firm tokens, Plivo/
+Twilio creds) live in `.env` locally and the platform secret store in the cloud — never in the app
+DB in plaintext (CMS credentials are encrypted with the secrets key / KMS). Dashboard-operator
+passwords are stored only as PBKDF2 hashes in `dashboard_users`.
 
 ---
 
 ## 13. Testing & verification posture
 
-**217 tests, 29 files, zero API keys or network needed.** Coverage: the qualification engine
+**253 tests, 33 files, zero API keys or network needed.** Coverage: the qualification engine
 (incl. SOL boundary + bad-date edges), every Phase 0 endpoint, latency stitching (incl.
 interleaved turns), the agent→backend contract (in-process ASGI), the Phase 1 platform — **RLS
 cross-tenant isolation against a real throwaway Postgres the suite boots itself**, token auth +
@@ -553,16 +641,16 @@ adapters — the Phase 3 omnichannel layer — TCPA outbound policy (consent, qu
 permanence), the thread brain, and webform→chaser→SMS→booking→CMS e2e with tenancy, nudges, and
 the zero-side-effect config preview — and the Phase 4 differentiation layer — consent-gated voice
 cloning, attorney-verdict qualification tuning, smart referrals, k-anonymous benchmarks, and the
-evidence-gated S2S decision.
+evidence-gated S2S decision. Newer suites add **dashboard-operator auth** (PBKDF2 hash/verify,
+signup-disabled), the **LLM provider catalog** (`test_llm_catalog.py` — configured/not-configured
+flags, alias resolution), and **managed-Postgres auth** wiring (`test_managed_pg_auth.py`).
 
 Live validation (2026-07-16): real Deepgram/Cartesia/LiveKit/Twilio auth; a real hot-path round
 trip (Cartesia TTS → Deepgram STT, word-perfect); a full voice turn through the production
 failover stack with a real tool call; an all-phases 24/24 HTTP smoke including webform → chaser
 SMS (first contact 0.5 s) → booked consult.
 
-**Open items across all phases are external accounts, not code:** a purchased Twilio number →
-SIP trunk + ≥20-call live latency measurement, a real Clio sandbox, a Cartesia clone key,
-provider keys for the S2S benchmark, real SMTP for referral email, and the GCP account to apply
-the Terraform/Helm.
-</content>
-</invoke>
+**Open items across all phases are external accounts, not code:** a purchased Plivo/Twilio number →
+SIP trunk + ≥20-call live latency measurement, an approved A2P 10DLC campaign for real outbound SMS,
+a real Clio sandbox, a Cartesia clone key, provider keys for the S2S benchmark, real SMTP for
+referral email, and the GCP account to apply the Terraform/Helm.

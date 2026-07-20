@@ -8,7 +8,8 @@ for the documents their cases need; and it refers out the work the firm won't ta
 day one, never misses a shift, never takes a call it can't handle, and costs a fraction of the
 team it replaces the workload of.*
 
-This is the business-facing companion to [`TECHNICAL.md`](TECHNICAL.md). It covers the problem,
+This is the business-facing companion to [`TECHNICAL.md`](TECHNICAL.md); for a shorter, plain-language
+"what it is" overview start with [`OVERVIEW.md`](OVERVIEW.md). This document covers the problem,
 the value, the product, the market, how to position and pitch it, pricing logic, and objection
 handling — all through one lens: **you're hiring an employee, not licensing a tool.**
 
@@ -209,8 +210,10 @@ You don't sell these details, but they're the substance behind the promises — 
 a sophisticated buyer or investor:
 
 - **It's genuinely fast.** A hard ≤800 ms-per-turn latency ceiling, measured per stage on every
-  call, tuned to ~376 ms LLM response through a real production stack. This is the difference
-  between "sounds human" and "sounds like a robot."
+  call (now down to the STT-finalization and guardrail slices), through a real production stack.
+  The conversational model is chosen for exactly this — a fast, natural, reliable tool-caller — and
+  is **selectable per firm** from a dozen-plus providers, so the firm is never locked to one
+  vendor's price or speed. This is the difference between "sounds human" and "sounds like a robot."
 - **It never double-files.** Every write to the CMS carries an idempotency key; a 50-call load
   test with forced duplicates produced exactly one lead and one consult per call, zero
   duplicates. Firms trust their system of record because it's provably clean.
@@ -224,8 +227,9 @@ a sophisticated buyer or investor:
 - **It fails over gracefully.** If a voice provider slows or errors mid-call, it switches to a
   backup provider without dropping the call — a reliability property a single-model system can't
   offer.
-- **It's proven end-to-end.** 217 automated tests, live validation on real provider APIs, and a
-  running cloud deployment. This is a working system, not a slide.
+- **It's proven end-to-end.** 257 automated tests, live validation on real provider APIs, and a
+  running cloud deployment (with a login-gated operator dashboard). This is a working system, not
+  a slide.
 
 ---
 
@@ -302,4 +306,3 @@ replace.
 > guardrails that stop it from ever giving legal advice. Firms lose roughly a third of their
 > potential clients to missed calls and slow follow-up; this is the employee that closes that
 > leak, so they stop losing cases they already paid to acquire.
-</content>
