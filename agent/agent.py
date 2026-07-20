@@ -158,16 +158,43 @@ QUALIFYING_INSTRUCTION = (
     "consultation and try to book it before ending."
 )
 
+def _sms_enabled() -> bool:
+    """Mirrors `api.messaging.sms_outbound_enabled` — the agent is a separate
+    service with its own env, so it reads the same flag independently rather
+    than importing the API package."""
+    return os.getenv("CASELINE_SMS_ENABLED", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 SCHEDULING_INSTRUCTION = (
     "SCHEDULING: you do NOT know the firm's calendar from memory. When a qualified "
     "caller wants to book, FIRST call get_available_slots, then offer two or three "
     "of those real times in natural language (e.g. 'I have Monday the 20th at 10 "
     "or 2, or Tuesday at 11'). Only book a time the tool returned. If the caller "
     "asks for a time that isn't open, say it's taken and offer the nearest real "
-    "options. You need the caller's name and phone number before booking. After a "
-    "successful booking you may offer an SMS confirmation — but only claim the "
-    "text was sent if send_sms reports success; if it didn't go through, say so "
-    "and offer to read the details instead."
+    "options. You need the caller's name and phone number before booking."
+)
+
+# Appended only when outbound SMS is actually available. Offering a text the
+# carrier will reject makes the agent apologize mid-booking, which reads as a
+# broken product — so when SMS is off we confirm verbally instead.
+SMS_ENABLED_INSTRUCTION = (
+    "CONFIRMATION TEXT: after a successful booking you may offer an SMS "
+    "confirmation — but only claim the text was sent if send_sms reports "
+    "success; if it didn't go through, say so and offer to read the details "
+    "instead."
+)
+
+SMS_DISABLED_INSTRUCTION = (
+    "CONFIRMATION TEXT: text messaging is NOT available right now. Never offer "
+    "to send a text, and never say you have sent or will send one. Confirm the "
+    "booking out loud instead: repeat the day and time, give the office address "
+    "clearly, and tell them the office will follow up to confirm. Do not "
+    "mention that texting is unavailable or broken — simply confirm verbally."
 )
 
 CLOSING_INSTRUCTION = (
@@ -225,6 +252,8 @@ class IntakeAgent(Agent):
             instructions = f"{instructions}\n\n{OUTBOUND_INSTRUCTION}"
         instructions = f"{instructions}\n\n{QUALIFYING_INSTRUCTION}"
         instructions = f"{instructions}\n\n{SCHEDULING_INSTRUCTION}"
+        sms_rule = SMS_ENABLED_INSTRUCTION if _sms_enabled() else SMS_DISABLED_INSTRUCTION
+        instructions = f"{instructions}\n\n{sms_rule}"
         instructions = f"{instructions}\n\n{CLOSING_INSTRUCTION}"
         super().__init__(instructions=instructions)
         self._backend = backend
@@ -436,8 +465,13 @@ class IntakeAgent(Agent):
             to: Destination phone number.
             body: Message text, one or two sentences.
         """
-        if not self._backend.v1:
-            return "sms unavailable"
+        if not self._backend.v1 or not _sms_enabled():
+            # Texting is switched off — steer the agent to confirm verbally
+            # rather than surface a technical failure to the caller.
+            return (
+                "texting is not available; do NOT mention texting — instead confirm the "
+                "appointment out loud with the day, time, and office address"
+            )
         result = await self._backend.send_sms(self._call_id, to, body)
         logger.info("send_sms -> %s", result)
         if result.get("status") != "sent":

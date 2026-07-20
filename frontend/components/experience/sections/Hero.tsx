@@ -5,6 +5,7 @@ import styles from "../experience.module.css";
 import { Reveal, RevealWords } from "../ui/Reveal";
 import { MagneticButton } from "../ui/MagneticButton";
 import { scrollToId } from "../lib/scrollToId";
+import { DASHBOARD_HREF } from "../ui/DashboardCta";
 
 /** Section 1 — the immersive hero. Copy sits low-left over the orb. */
 export function Hero() {
@@ -27,7 +28,9 @@ export function Hero() {
           day or night, on the first ring.
         </Reveal>
         <Reveal className={styles.ctaRow} delay={0.7}>
-          <MagneticButton onClick={() => scrollToId("cta")}>Book a demo</MagneticButton>
+          {/* Two buttons only — a third pushes the row into the scroll hint.
+              "Book a demo" stays available in the topbar and closing section. */}
+          <MagneticButton href={DASHBOARD_HREF}>Go to dashboard</MagneticButton>
           <MagneticButton variant="ghost" onClick={() => scrollToId("demo")}>
             Hear it answer
           </MagneticButton>

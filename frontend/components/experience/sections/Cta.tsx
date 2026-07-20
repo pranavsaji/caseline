@@ -3,6 +3,7 @@
 import styles from "../experience.module.css";
 import { Reveal, RevealWords } from "../ui/Reveal";
 import { MagneticButton } from "../ui/MagneticButton";
+import { DASHBOARD_HREF } from "../ui/DashboardCta";
 
 /**
  * Section 6 — the closing call to action. Camera recenters on the orb glowing
@@ -32,11 +33,9 @@ export function Cta() {
         </Reveal>
         <Reveal className={styles.ctaRow} delay={0.5} >
           <div style={{ margin: "2.4rem auto 0", display: "flex", gap: "1rem", flexWrap: "wrap", justifyContent: "center" }}>
-            <MagneticButton href="mailto:hello@caseline.ai?subject=Caseline%20demo">
+            <MagneticButton href={DASHBOARD_HREF}>Go to dashboard</MagneticButton>
+            <MagneticButton variant="ghost" href="mailto:hello@caseline.ai?subject=Caseline%20demo">
               Book a demo
-            </MagneticButton>
-            <MagneticButton variant="ghost" href="/">
-              Open the dashboard
             </MagneticButton>
           </div>
         </Reveal>

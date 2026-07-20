@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from api import qualification
-from api.messaging import SMSProvider, normalize_phone
+from api.messaging import SMSProvider, normalize_phone, sms_outbound_enabled
 from api.orchestration.config import AgentConfig
 from api.platform import events
 from api.platform.db import Database
@@ -297,10 +297,16 @@ def send_sms(ctx: ToolContext, call_id: str, to: str, body: str) -> dict:
     if normalized is None:
         logger.warning("send_sms: invalid destination %r for call %s", to, call_id)
         return {"status": "failed", "reason": "invalid_number", "to": to}
+    # Outbound SMS can be switched off (e.g. pending A2P 10DLC approval) so the
+    # agent never promises a text the carrier will reject.
+    if not sms_outbound_enabled():
+        logger.info("send_sms: outbound SMS disabled; not sending to %s", normalized)
+        return {"status": "failed", "reason": "disabled", "to": normalized}
     try:
         provider_id = ctx.sms.send(normalized, body)
     except httpx.HTTPError as exc:
-        # Transport rejected it (invalid/unverified number, trial limits, outage).
+        # Transport rejected it (unregistered 10DLC campaign, unverified number,
+        # trial limits, outage). `exc` carries the provider's own reason.
         logger.warning("send_sms: transport error to %s: %s", normalized, exc)
         return {"status": "failed", "reason": "transport_error", "to": normalized}
     with ctx.db.firm(ctx.firm_id) as conn:

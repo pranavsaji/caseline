@@ -1,6 +1,7 @@
 "use client";
 
 import styles from "../experience.module.css";
+import { SectionCta } from "../ui/DashboardCta";
 import { Reveal, RevealWords } from "../ui/Reveal";
 
 /** Section 2 — brand introduction. Camera has pulled back; copy sits right. */
@@ -26,6 +27,7 @@ export function Intro() {
           Caseline answers every one instantly — with the composure of your best
           front-desk hire and the consistency of software.
         </Reveal>
+        <SectionCta />
       </div>
     </section>
   );

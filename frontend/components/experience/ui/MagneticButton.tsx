@@ -61,7 +61,13 @@ export function MagneticButton({
       onPointerLeave={reset}
     >
       {href ? (
-        <a className={cls} href={href} target="_blank" rel="noreferrer">
+        // Internal links (/dashboard) navigate in place; only external targets
+        // (http…, mailto:) open a new tab.
+        <a
+          className={cls}
+          href={href}
+          {...(href.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}
+        >
           {inner}
         </a>
       ) : (

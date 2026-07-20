@@ -12,7 +12,7 @@ import styles from "./kit.module.css";
  * the only client island is <NavItem> (active-route highlighting).
  */
 const NAV = [
-  { href: "/", label: "Overview", icon: "overview" },
+  { href: "/dashboard", label: "Overview", icon: "overview" },
   { href: "/calls", label: "Calls", icon: "calls" },
   { href: "/threads", label: "Threads", icon: "threads" },
   { href: "/analytics", label: "Analytics", icon: "analytics" },

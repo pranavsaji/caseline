@@ -223,6 +223,52 @@
 }
 .topLink:hover { background: rgba(45,212,191,0.12); border-color: var(--accent); }
 
+/* Accented variant of .topLink — the "Go to dashboard" route into the product.
+   Filled so it reads as the primary action next to the ghost "Book a demo". */
+.topLinkAccent {
+  color: var(--bg-deep, #05070d);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 20px -4px var(--accent);
+}
+.topLinkAccent:hover {
+  background: var(--accent);
+  filter: brightness(1.12);
+}
+
+/* The topbar group holding both links. */
+.topActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  pointer-events: auto;
+}
+/* On narrow screens the secondary "Book a demo" drops out so the dashboard
+   route stays visible rather than wrapping. */
+@media (max-width: 560px) {
+  .topActions .topLink:not(.topLinkAccent) { display: none; }
+}
+
+/* Inline "go to dashboard" link that closes each content section. */
+.sectionCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 2rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.3s, gap 0.3s;
+}
+.sectionCta:hover { border-color: var(--accent); gap: 0.85rem; }
+.sectionCta span { transition: transform 0.3s; }
+.sectionCta:hover span { transform: translateX(3px); }
+
 /* ---- side progress dots ------------------------------------------------ */
 .dots {
   position: fixed;

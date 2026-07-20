@@ -11,6 +11,7 @@ import { Loader } from "./ui/Loader";
 import { Cursor } from "./ui/Cursor";
 import { SideNav } from "./ui/SideNav";
 import { Fallback } from "./ui/Fallback";
+import { DASHBOARD_HREF } from "./ui/DashboardCta";
 import { Hero } from "./sections/Hero";
 import { Intro } from "./sections/Intro";
 import { Features } from "./sections/Features";
@@ -62,9 +63,17 @@ export function ExperienceRoot() {
           <span className={styles.brandDot} aria-hidden />
           Caseline
         </span>
-        <a className={styles.topLink} href="mailto:hello@caseline.ai?subject=Caseline%20demo">
-          Book a demo
-        </a>
+        <span className={styles.topActions}>
+          <a className={styles.topLink} href="mailto:hello@caseline.ai?subject=Caseline%20demo">
+            Book a demo
+          </a>
+          <a
+            className={`${styles.topLink} ${styles.topLinkAccent}`}
+            href={DASHBOARD_HREF}
+          >
+            Go to dashboard
+          </a>
+        </span>
       </header>
 
       {showScene && <SideNav />}

@@ -3,14 +3,19 @@
 // ?next=); unauthenticated /api requests get a 401 JSON so client fetches fail
 // cleanly instead of receiving redirected HTML.
 //
-// The ONLY public surface is what's needed to actually sign in: the sign-in page
-// and the auth API. Self-serve signup is disabled, so /signup only 307s to
-// /login. The /experience marketing route is now gated too (per "gate everything").
+// The public surface is the marketing landing page plus what's needed to sign
+// in. Self-serve signup is disabled, so /signup only 307s to /login.
+//
+// `/` is the cinematic marketing experience (and `/experience` forwards to it).
+// Both are static marketing content that renders NO firm data, so they are safe
+// to serve unauthenticated — that is the whole point, since prospects need to
+// see it. Everything that touches tenant data — /dashboard, /calls, /threads,
+// /analytics, /config, and every /api route except auth — stays gated.
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifySessionToken, SESSION_COOKIE } from "./lib/session";
 
-const PUBLIC_PATHS = ["/login", "/signup"];
+const PUBLIC_PATHS = ["/", "/experience", "/login", "/signup"];
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.includes(pathname) || pathname.startsWith("/api/auth/");

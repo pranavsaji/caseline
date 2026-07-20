@@ -108,7 +108,18 @@ class PlivoSMSProvider(SMSProvider):
             },
             timeout=10.0,
         )
-        r.raise_for_status()
+        # Plivo puts the actionable reason in the JSON body ("error"), not the
+        # status line — e.g. a 400 for an unregistered A2P 10DLC campaign looks
+        # identical to a 400 for a malformed number unless you read it. Fold it
+        # into the exception message so the tool layer can log something useful.
+        if r.is_error:
+            try:
+                detail = r.json().get("error") or r.text
+            except ValueError:
+                detail = r.text
+            raise httpx.HTTPStatusError(
+                f"Plivo {r.status_code}: {detail}", request=r.request, response=r
+            )
         # Plivo returns {"message_uuid": ["<id>"], "api_id": "..."}.
         uuids = r.json().get("message_uuid") or []
         return uuids[0] if uuids else r.json().get("api_id", "plivo-sent")
@@ -168,6 +179,23 @@ def make_email_provider() -> EmailProvider:
             from_address=os.getenv("CASELINE_SMTP_FROM", "intake@caseline.app"),
         )
     return LoggingEmailProvider()
+
+
+def sms_outbound_enabled() -> bool:
+    """Whether the agent may OFFER to send an SMS.
+
+    Credentials being present is not the same as being allowed to send: a US
+    long code still needs an approved A2P 10DLC campaign, and that approval is
+    invisible until a send is rejected. Rather than let the agent promise a
+    text and then apologize, this gate lets us turn the offer off until the
+    registration clears. Flip `CASELINE_SMS_ENABLED=true` once it does.
+    """
+    return os.getenv("CASELINE_SMS_ENABLED", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def make_sms_provider() -> SMSProvider:

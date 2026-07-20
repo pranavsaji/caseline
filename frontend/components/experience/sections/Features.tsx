@@ -1,6 +1,7 @@
 "use client";
 
 import styles from "../experience.module.css";
+import { SectionCta } from "../ui/DashboardCta";
 import { Reveal } from "../ui/Reveal";
 
 const FEATURES = [
@@ -45,6 +46,7 @@ export function Features() {
             </Reveal>
           ))}
         </div>
+        <SectionCta />
       </div>
     </section>
   );

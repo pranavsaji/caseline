@@ -32,8 +32,8 @@ const ICONS: Record<string, ComponentType<{ size?: number; className?: string; "
 
 /**
  * Neomorphic sidebar link. Raised-on-hover, **pressed/inset when active** so
- * you can feel where you are (§6). Active detection: exact match for the
- * overview root, prefix match for the rest. Renders a real `aria-current`.
+ * you can feel where you are (§6). Active detection: exact match, or a prefix
+ * match on the next path segment. Renders a real `aria-current`.
  */
 export default function NavItem({
   href,
@@ -45,7 +45,7 @@ export default function NavItem({
   icon: string;
 }) {
   const pathname = usePathname();
-  const active = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+  const active = pathname === href || pathname.startsWith(`${href}/`);
   const Icon = ICONS[icon] ?? LayoutGrid;
   return (
     <Link

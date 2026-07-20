@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useInView } from "framer-motion";
 import styles from "../experience.module.css";
+import { SectionCta } from "../ui/DashboardCta";
 import { Reveal } from "../ui/Reveal";
 
 type Metric = { value: number; unit?: string; decimals?: number; label: string };
@@ -60,6 +61,7 @@ export function Proof() {
             </Reveal>
           ))}
         </div>
+        <SectionCta />
       </div>
     </section>
   );

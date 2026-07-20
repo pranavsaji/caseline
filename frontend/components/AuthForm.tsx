@@ -36,8 +36,10 @@ export default function AuthForm() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? "Something went wrong");
       // Only follow same-origin relative paths from ?next= (avoid open redirect).
+      // Signing in lands on the dashboard, never the marketing page at `/`.
       const next = params.get("next");
-      const dest = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+      const safeNext = next && next.startsWith("/") && !next.startsWith("//") ? next : null;
+      const dest = safeNext && safeNext !== "/" ? safeNext : "/dashboard";
       router.replace(dest);
       router.refresh();
     } catch (err) {

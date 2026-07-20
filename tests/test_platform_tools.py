@@ -181,6 +181,22 @@ def test_send_sms_persists_and_uses_provider(v1_client, firm, platform):
     assert messages[0]["direction"] == "out"
 
 
+def test_send_sms_disabled_does_not_reach_provider(v1_client, firm, platform, monkeypatch):
+    # With outbound SMS switched off (e.g. pending A2P 10DLC approval) the tool
+    # reports a normal failure and never hands the message to the transport, so
+    # the agent can steer around it instead of promising a text that bounces.
+    monkeypatch.setenv("CASELINE_SMS_ENABLED", "false")
+    before = len(platform.sms.sent)
+    r = v1_client.post(
+        "/v1/tools/send_sms",
+        json={"call_id": "call-7", "to": "+15125550100", "body": "See you Tuesday."},
+        headers=firm["headers"],
+    )
+    assert r.status_code == 200
+    assert r.json() == {"status": "failed", "reason": "disabled", "to": "+15125550100"}
+    assert len(platform.sms.sent) == before
+
+
 def test_take_message_persists(v1_client, firm):
     r = v1_client.post(
         "/v1/tools/take_message",

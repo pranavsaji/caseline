@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "../experience.module.css";
 import { Reveal } from "../ui/Reveal";
 import { MagneticButton } from "../ui/MagneticButton";
+import { DASHBOARD_HREF } from "../ui/DashboardCta";
 import { experience } from "../lib/store";
 
 type Turn = { who: "caller" | "agent"; text: string };
@@ -135,6 +136,9 @@ export function Demo() {
 
           <div className={styles.ctaRow}>
             <MagneticButton onClick={play}>{started ? "Replay the call" : "Play the call"}</MagneticButton>
+            <MagneticButton variant="ghost" href={DASHBOARD_HREF}>
+              Go to dashboard
+            </MagneticButton>
           </div>
         </div>
       </div>
