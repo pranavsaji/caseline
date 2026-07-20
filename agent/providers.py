@@ -384,8 +384,9 @@ def _build_tts(provider: str, model: str, voice_id: str | None) -> object:
                 )
 
         base = _GuardedCartesiaTTS(
-            # Cartesia's current model. sonic-2 is being sunset (2026-10-20) and a
-            # bare "sonic-3" is not a distinct model id, so pin the latest explicitly.
+            # Cartesia's current model. sonic-2 is being sunset (2026-10-20);
+            # sonic-3.5 is the recommended latest (verified live: it and sonic-3
+            # both 200, sonic-3.5 is what Cartesia's migration notice points to).
             model=model or "sonic-3.5",
             voice=voice,
             http_session=_cartesia_http_session(),
