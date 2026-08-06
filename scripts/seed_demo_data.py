@@ -8,7 +8,10 @@ skipped if its marker rows already exist. Pass --reset to delete previously
 seeded rows first and re-seed.
 
 Usage:
-  python scripts/seed_demo_data.py [--reset]
+  python scripts/seed_demo_data.py [--reset] [--firm <name-or-id>]
+
+--firm picks the tenant to seed (name or uuid); without it the oldest firm is
+used, which is what a single-firm deploy wants.
 
 Reads CASELINE_DATABASE_URL from the env (preferred) or .env. Against prod use
 the Postgres public proxy URL, since the internal host won't resolve off-Railway.
@@ -82,6 +85,38 @@ REFERRAL_PARTNERS = [
     },
 ]
 
+# Webform/ad leads for the speed-to-lead header on /threads. That panel reads
+# ONLY `leads` with source in ('web','ad') from the last 30 days — a firm can
+# have a full Conversations table and still show dashes there, because threads
+# and leads are different tables. These rows are what the chaser would have
+# produced: created_at when the form was submitted, first_contact_at when the
+# chaser's first text went out.
+#
+# The spread is deliberately not uniform. Most contacts land in seconds (the
+# chaser fires off the lead.created event), a couple are slower, and one is
+# never contacted at all — so contact rate is realistically short of 100% and
+# p95 sits meaningfully above p50 instead of collapsing onto it. Kept under the
+# 60 s SLO because that is the honest picture of the system working.
+#
+# (contact, source, practice_area, days_ago, seconds_to_first_contact | None)
+CHASER_LEADS = [
+    (("Alicia Moreno", "+15125550440", None), "web", "personal injury", 27.4, 6),
+    (("Devon Pratt", None, "devon.pratt@example.com"), "web", "personal injury", 25.1, 11),
+    (("Rhonda K. Silva", "+15125550441", None), "ad", "personal injury", 23.8, 4),
+    (("Marcus Bell", "+15125550401", None), "web", "personal injury", 21.2, 9),
+    (("Tomas Iverson", "+15125550442", None), "web", "personal injury", 18.6, 38),
+    (("Nadia Hassan", None, "n.hassan@example.com"), "ad", "personal injury", 16.9, 7),
+    (("Curtis Lang", "+15125550443", None), "web", "personal injury", 14.3, 5),
+    (("Bethany Cole", "+15125550444", None), "web", "personal injury", 12.7, 19),
+    (("Ray Okafor", None, "ray.okafor@example.com"), "ad", "personal injury", 10.4, 8),
+    (("Simone Vaught", "+15125550445", None), "web", "personal injury", 8.8, 3),
+    (("Hector Ramos", "+15125550446", None), "web", "personal injury", 6.2, 31),
+    (("Junie Whitlock", None, "junie.w@example.com"), "web", "personal injury", 4.5, 12),
+    (("Aaron Delgado", "+15125550447", None), "ad", "personal injury", 2.9, 6),
+    # Submitted with a bad number and a bounced email — nothing to contact.
+    (("Pat Nolan", "+15125550448", None), "web", "personal injury", 1.6, None),
+]
+
 # Tuning needs leads with a stored qualification + an attorney verdict. The mix
 # below is deliberately imperfect so the tuning report produces a real
 # suggestion rather than a flat 100%: the engine 'qualified' six soft-tissue
@@ -116,7 +151,7 @@ THREADS = [
         "status": "open",
         "contact": ("Marcus Bell", "+15125550401", None),
         "messages": [
-            ("out", "Hi Marcus, this is Caseline for Saji & Partners — you asked about a car accident claim. Is now an okay time for a few quick questions?", 1.2),
+            ("out", "Hi Marcus, this is Caseline for {firm} — you asked about a car accident claim. Is now an okay time for a few quick questions?", 1.2),
             ("in", "yeah that works", 1.1),
             ("out", "Great. When did the accident happen, and are you currently getting treatment?", 1.0),
             ("in", "last tuesday, seeing a chiropractor now", 0.4),
@@ -144,7 +179,7 @@ THREADS = [
         "status": "open",
         "contact": ("Priya Nair", None, "priya.n@example.com"),
         "messages": [
-            ("out", "Hello Priya, thanks for reaching out to Saji & Partners about your workplace injury. Could you tell us when it happened and whether a report was filed?", 2.0),
+            ("out", "Hello Priya, thanks for reaching out to {firm} about your workplace injury. Could you tell us when it happened and whether a report was filed?", 2.0),
             ("in", "It was about 3 weeks ago. Yes, I filed a report with HR the same day.", 1.5),
             ("out", "Thank you — that's helpful. Are you receiving medical treatment currently?", 1.4),
         ],
@@ -156,7 +191,7 @@ THREADS = [
         "status": "open",
         "contact": ("Luis Ortega", "+15125550403", None),
         "messages": [
-            ("out", "Hi Luis, checking in from Saji & Partners. How is your treatment going this week?", 7.0),
+            ("out", "Hi Luis, checking in from {firm}. How is your treatment going this week?", 7.0),
             ("in", "better, went to PT twice", 6.8),
             ("out", "Glad to hear it. Any new appointments scheduled we should note for your file?", 6.8),
             ("in", "yeah ortho on the 28th", 6.7),
@@ -170,7 +205,7 @@ THREADS = [
         "status": "open",
         "contact": ("Tara Franklin", None, "t.franklin@example.com"),
         "messages": [
-            ("out", "Hi Tara, your monthly treatment check-in from Saji & Partners. How are you feeling, and are you still seeing your providers?", 5.0),
+            ("out", "Hi Tara, your monthly treatment check-in from {firm}. How are you feeling, and are you still seeing your providers?", 5.0),
             ("in", "Still in PT, and I have an MRI scheduled next month.", 4.6),
         ],
     },
@@ -187,9 +222,9 @@ def _set_firm(cur, firm_id: str) -> None:
     cur.execute("SELECT set_config('app.firm_id', %s, false)", (str(firm_id),))
 
 
-def _seed(cur, firm_id: str, agent_id: str) -> dict:
+def _seed(cur, firm_id: str, agent_id: str, firm_name: str = "the firm") -> dict:
     counts = {"referral_partners": 0, "referrals": 0, "threads": 0, "messages": 0,
-              "tuning_leads": 0, "lead_reviews": 0, "consults": 0}
+              "tuning_leads": 0, "lead_reviews": 0, "consults": 0, "chaser_leads": 0}
 
     def add_contact(name, phone, email) -> str:
         cur.execute(
@@ -199,12 +234,15 @@ def _seed(cur, firm_id: str, agent_id: str) -> dict:
         )
         return cur.fetchone()["id"]
 
-    def add_lead(contact_id, source, practice_area, qualification, status="new") -> str:
+    def add_lead(contact_id, source, practice_area, qualification, status="new",
+                 created_at=None, first_contact_at=None) -> str:
         cur.execute(
             "INSERT INTO leads (firm_id, source, contact_id, status, qualification,"
-            " practice_area, external_cms_id) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            " practice_area, external_cms_id, created_at, first_contact_at)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s, coalesce(%s, now()), %s) RETURNING id",
             (firm_id, source, contact_id, status,
-             json.dumps(qualification) if qualification else None, practice_area, MARKER),
+             json.dumps(qualification) if qualification else None, practice_area, MARKER,
+             created_at, first_contact_at),
         )
         return cur.fetchone()["id"]
 
@@ -270,6 +308,18 @@ def _seed(cur, firm_id: str, agent_id: str) -> dict:
         counts["tuning_leads"] += 1
         counts["lead_reviews"] += 1
 
+    # --- webform/ad leads: the speed-to-lead panel on /threads ------------
+    for contact, source, area, days_ago, secs in CHASER_LEADS:
+        cid = add_contact(*contact)
+        created = _ago(days_ago)
+        add_lead(
+            cid, source, area, None,
+            status="new" if secs is None else "contacted",
+            created_at=created,
+            first_contact_at=None if secs is None else created + timedelta(seconds=secs),
+        )
+        counts["chaser_leads"] += 1
+
     # --- threads + messages ----------------------------------------------
     for t in THREADS:
         cid = add_contact(*t["contact"])
@@ -290,7 +340,10 @@ def _seed(cur, firm_id: str, agent_id: str) -> dict:
             cur.execute(
                 "INSERT INTO messages (firm_id, channel, thread_id, direction, body, ts)"
                 " VALUES (%s,%s,%s,%s,%s,%s)",
-                (firm_id, t["channel"], str(tid), direction, body, ts),
+                # Messages name the firm they came from, so the seeded
+                # transcript has to say whichever firm it is being seeded into.
+                (firm_id, t["channel"], str(tid), direction,
+                 body.format(firm=firm_name), ts),
             )
             counts["messages"] += 1
             if direction == "in":
@@ -321,10 +374,20 @@ def _seed(cur, firm_id: str, agent_id: str) -> dict:
     return counts
 
 
+# Every read and delete below filters on firm_id explicitly rather than leaning
+# on RLS. This script connects as the table OWNER, and the tenant tables are
+# ENABLE ROW LEVEL SECURITY without FORCE — which means policies do not apply to
+# this connection at all. _set_firm() still sets app.firm_id (the INSERTs want
+# it, and it is correct if the script is ever pointed at a non-owner role), but
+# nothing here may treat it as a filter: an unscoped DELETE on a multi-firm
+# deploy would wipe every tenant's seeded rows, silently and irreversibly.
+
+
 def _already_seeded(cur, firm_id: str) -> bool:
     _set_firm(cur, firm_id)
     cur.execute(
-        "SELECT count(*) AS n FROM referral_partners WHERE notes LIKE %s", (f"%{MARKER}%",)
+        "SELECT count(*) AS n FROM referral_partners WHERE firm_id=%s AND notes LIKE %s",
+        (firm_id, f"%{MARKER}%"),
     )
     return cur.fetchone()["n"] > 0
 
@@ -333,21 +396,36 @@ def _reset(cur, firm_id: str) -> None:
     _set_firm(cur, firm_id)
     # Delete children before parents. Seeded leads/contacts carry MARKER in
     # external_cms_id; referrals/reviews/consults/threads reference them.
-    cur.execute("DELETE FROM referrals WHERE lead_id IN"
-                " (SELECT id FROM leads WHERE external_cms_id=%s)", (MARKER,))
-    cur.execute("DELETE FROM referral_partners WHERE notes LIKE %s", (f"%{MARKER}%",))
-    cur.execute("DELETE FROM lead_reviews WHERE lead_id IN"
-                " (SELECT id FROM leads WHERE external_cms_id=%s)", (MARKER,))
-    cur.execute("DELETE FROM messages WHERE thread_id IN"
-                " (SELECT id::text FROM threads WHERE state->>'seed'=%s)", (MARKER,))
-    cur.execute("DELETE FROM threads WHERE state->>'seed'=%s", (MARKER,))
-    cur.execute("DELETE FROM consults WHERE idempotency_key LIKE %s", (f"{MARKER}:%",))
-    cur.execute("DELETE FROM leads WHERE external_cms_id=%s", (MARKER,))
-    cur.execute("DELETE FROM contacts WHERE external_cms_id=%s", (MARKER,))
+    cur.execute("DELETE FROM referrals WHERE firm_id=%s AND lead_id IN"
+                " (SELECT id FROM leads WHERE firm_id=%s AND external_cms_id=%s)",
+                (firm_id, firm_id, MARKER))
+    cur.execute("DELETE FROM referral_partners WHERE firm_id=%s AND notes LIKE %s",
+                (firm_id, f"%{MARKER}%"))
+    cur.execute("DELETE FROM lead_reviews WHERE firm_id=%s AND lead_id IN"
+                " (SELECT id FROM leads WHERE firm_id=%s AND external_cms_id=%s)",
+                (firm_id, firm_id, MARKER))
+    cur.execute("DELETE FROM messages WHERE firm_id=%s AND thread_id IN"
+                " (SELECT id::text FROM threads WHERE firm_id=%s AND state->>'seed'=%s)",
+                (firm_id, firm_id, MARKER))
+    cur.execute("DELETE FROM threads WHERE firm_id=%s AND state->>'seed'=%s", (firm_id, MARKER))
+    cur.execute("DELETE FROM consults WHERE firm_id=%s AND idempotency_key LIKE %s",
+                (firm_id, f"{MARKER}:%"))
+    cur.execute("DELETE FROM leads WHERE firm_id=%s AND external_cms_id=%s", (firm_id, MARKER))
+    cur.execute("DELETE FROM contacts WHERE firm_id=%s AND external_cms_id=%s",
+                (firm_id, MARKER))
 
 
 def main() -> int:
-    reset = "--reset" in sys.argv[1:]
+    args = sys.argv[1:]
+    reset = "--reset" in args
+    firm_ref = None
+    if "--firm" in args:
+        i = args.index("--firm")
+        if i + 1 >= len(args):
+            print("--firm needs a firm name or uuid", file=sys.stderr)
+            return 1
+        firm_ref = args[i + 1]
+
     db_url = os.environ.get("CASELINE_DATABASE_URL") or dotenv_values(".env").get(
         "CASELINE_DATABASE_URL"
     )
@@ -357,10 +435,20 @@ def main() -> int:
 
     with _conn(db_url) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name FROM firms ORDER BY created_at LIMIT 1")
+            # Default to the oldest firm (the single-firm case). With more than
+            # one firm on the deploy, seeding the wrong tenant is silent and
+            # annoying to undo, so --firm selects explicitly.
+            if firm_ref:
+                cur.execute(
+                    "SELECT id, name FROM firms WHERE id::text = %s OR name = %s",
+                    (firm_ref, firm_ref),
+                )
+            else:
+                cur.execute("SELECT id, name FROM firms ORDER BY created_at LIMIT 1")
             firm = cur.fetchone()
             if not firm:
-                print("No firm found — run onboarding first.", file=sys.stderr)
+                where = f"matching {firm_ref!r}" if firm_ref else "found"
+                print(f"No firm {where} — run onboarding first.", file=sys.stderr)
                 return 1
             firm_id = firm["id"]
             cur.execute("SELECT id FROM agents WHERE firm_id=%s ORDER BY created_at LIMIT 1",
@@ -378,7 +466,7 @@ def main() -> int:
                 return 0
 
             _set_firm(cur, firm_id)
-            counts = _seed(cur, firm_id, agent_id)
+            counts = _seed(cur, firm_id, agent_id, firm["name"])
             conn.commit()
 
     print(f"Seeded demo data for firm {firm['name']!r}:")

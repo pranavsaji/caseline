@@ -51,9 +51,14 @@ def _normalize_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
-def create_user(db: Database, email: str, password: str) -> str:
+def create_user(
+    db: Database, email: str, password: str, firm_id: str | None = None
+) -> str:
     """Create a dashboard account. Raises ``ValueError`` on invalid input and
-    ``UserExistsError`` if the email is taken. Returns the normalized email."""
+    ``UserExistsError`` if the email is taken. Returns the normalized email.
+
+    ``firm_id`` binds the account to one tenant; leaving it None keeps the
+    account on the deploy's default firm (see migration 0009)."""
     email = _normalize_email(email)
     if not _EMAIL_RE.match(email):
         raise ValueError("Enter a valid email address")
@@ -63,17 +68,30 @@ def create_user(db: Database, email: str, password: str) -> str:
         if conn.execute("SELECT 1 FROM dashboard_users WHERE email = %s", (email,)).fetchone():
             raise UserExistsError()
         conn.execute(
-            "INSERT INTO dashboard_users (email, password_hash) VALUES (%s, %s)",
-            (email, _hash_password(password)),
+            "INSERT INTO dashboard_users (email, password_hash, firm_id) VALUES (%s, %s, %s)",
+            (email, _hash_password(password), firm_id),
         )
     return email
 
 
 def verify_user(db: Database, email: str, password: str) -> bool:
     """True iff the email exists and the password matches its stored hash."""
+    return authenticate(db, email, password) is not None
+
+
+def authenticate(db: Database, email: str, password: str) -> dict | None:
+    """Verify credentials and return the account's identity — ``{"email",
+    "firm_id"}`` — or None if the email is unknown or the password is wrong.
+
+    The firm_id rides along with the auth decision on purpose: it is the tenant
+    every subsequent request from this session must be scoped to, and resolving
+    it anywhere else would mean a second lookup that could disagree with this
+    one. ``firm_id`` is None for accounts not bound to a firm."""
     email = _normalize_email(email)
     with db.admin() as conn:
         row = conn.execute(
-            "SELECT password_hash FROM dashboard_users WHERE email = %s", (email,)
+            "SELECT password_hash, firm_id FROM dashboard_users WHERE email = %s", (email,)
         ).fetchone()
-    return bool(row) and _verify_password(password, row["password_hash"])
+    if not row or not _verify_password(password, row["password_hash"]):
+        return None
+    return {"email": email, "firm_id": str(row["firm_id"]) if row["firm_id"] else None}

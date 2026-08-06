@@ -47,8 +47,18 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function createSessionToken(email: string): Promise<string> {
-  const payload = JSON.stringify({ email, exp: Date.now() + SESSION_MAX_AGE * 1000 });
+export type Session = { email: string; firmId: string | null };
+
+// firmId rides in the payload so every server-side request can scope itself to
+// the signed-in operator's tenant without a per-request database lookup. The
+// payload is signed but NOT encrypted — readable by anyone holding the cookie —
+// so this must stay a plain tenant id and never a credential. Acting as the
+// firm still requires the admin token, which lives only on the server.
+export async function createSessionToken(
+  email: string,
+  firmId: string | null = null,
+): Promise<string> {
+  const payload = JSON.stringify({ email, firmId, exp: Date.now() + SESSION_MAX_AGE * 1000 });
   const payloadB64 = toB64Url(encoder.encode(payload));
   const sig = await sign(payloadB64);
   return `${payloadB64}.${sig}`;
@@ -56,16 +66,20 @@ export async function createSessionToken(email: string): Promise<string> {
 
 export async function verifySessionToken(
   token: string | undefined | null,
-): Promise<{ email: string } | null> {
+): Promise<Session | null> {
   if (!token) return null;
   const [payloadB64, sig] = token.split(".");
   if (!payloadB64 || !sig) return null;
   const expected = await sign(payloadB64);
   if (!safeEqual(sig, expected)) return null;
   try {
-    const { email, exp } = JSON.parse(new TextDecoder().decode(fromB64Url(payloadB64)));
+    const { email, firmId, exp } = JSON.parse(
+      new TextDecoder().decode(fromB64Url(payloadB64)),
+    );
     if (!email || typeof exp !== "number" || Date.now() > exp) return null;
-    return { email };
+    // Sessions minted before firmId existed simply carry none — they fall back
+    // to the deploy's default firm rather than being forced to re-authenticate.
+    return { email, firmId: typeof firmId === "string" ? firmId : null };
   } catch {
     return null;
   }

@@ -15,6 +15,7 @@ import hashlib
 import secrets as pysecrets
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 
@@ -103,8 +104,46 @@ def bearer_token(request: Request) -> str:
     return header[7:].strip()
 
 
+FIRM_ID_HEADER = "x-caseline-firm-id"
+
+
+def _admin_impersonated_firm(request: Request) -> AuthedFirm | None:
+    """The dashboard path: a caller already holding the deploy admin secret may
+    name the firm it is acting for via ``X-Caseline-Firm-Id``.
+
+    This is how the Next server serves multiple tenants from one deploy — it
+    authenticates the human, then acts as that human's firm. It grants no new
+    authority: the admin token already reaches every admin endpoint and could
+    mint a token for any firm. What it buys is that the resolved firm_id still
+    becomes the RLS context below, so a dashboard session is confined to its
+    own tenant by the same mechanism as a service token — not by trusting the
+    UI to filter. Requests without the admin secret can never take this path.
+    """
+    firm_id = request.headers.get(FIRM_ID_HEADER, "").strip()
+    if not firm_id:
+        return None
+    try:
+        # Validated before it reaches SQL: an unparseable uuid would otherwise
+        # surface as a 500 from the driver rather than the 400 it actually is.
+        uuid.UUID(firm_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed firm id") from None
+    expected = request.app.state.platform.admin_token
+    provided = request.headers.get("x-admin-token", "")
+    if not expected or not pysecrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Admin token required to act as a firm")
+    with request.app.state.platform.db.admin() as conn:
+        row = conn.execute("SELECT 1 FROM firms WHERE id = %s", (firm_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown firm")
+    return AuthedFirm(firm_id=firm_id, scopes=())
+
+
 def require_firm(request: Request) -> AuthedFirm:
     """FastAPI dependency: bearer token -> firm identity (the RLS context)."""
+    impersonated = _admin_impersonated_firm(request)
+    if impersonated is not None:
+        return impersonated
     token = bearer_token(request)
     platform = request.app.state.platform
     if not platform.rate_limiter.allow(_hash(token)):

@@ -6,11 +6,39 @@ const BASE = process.env.CASELINE_API_URL ?? "http://localhost:8000";
 const TOKEN = process.env.CASELINE_FIRM_TOKEN ?? "";
 const ADMIN_TOKEN = process.env.CASELINE_ADMIN_TOKEN ?? "";
 
+// Which tenant does this request belong to? A signed-in operator's session
+// names its firm; we act as that firm using the admin token (the backend's
+// auth.require_firm accepts admin + X-Caseline-Firm-Id and makes the named
+// firm the RLS context, so isolation is still enforced in Postgres).
+//
+// Falling back to the deploy-wide firm token covers the two cases with no
+// session to read: unauthenticated calls like the login handler itself, and
+// single-tenant installs that never bind accounts to firms.
+async function firmHeaders(): Promise<Record<string, string>> {
+  if (ADMIN_TOKEN) {
+    try {
+      // Imported lazily: `next/headers` is only resolvable inside a request
+      // scope, and this module is also loaded from places that have none.
+      const { cookies } = await import("next/headers");
+      const { verifySessionToken, SESSION_COOKIE } = await import("./session");
+      const session = await verifySessionToken(
+        (await cookies()).get(SESSION_COOKIE)?.value,
+      );
+      if (session?.firmId) {
+        return { "X-Admin-Token": ADMIN_TOKEN, "X-Caseline-Firm-Id": session.firmId };
+      }
+    } catch {
+      // No request scope (or no cookie) — fall through to the default firm.
+    }
+  }
+  return { Authorization: `Bearer ${TOKEN}` };
+}
+
 async function api(path: string, init?: RequestInit) {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${TOKEN}`,
+      ...(await firmHeaders()),
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
     },
@@ -323,7 +351,7 @@ export const loginUser = (email: string, password: string) =>
   api("/v1/dashboard/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
-  }) as Promise<{ ok: boolean; email: string }>;
+  }) as Promise<{ ok: boolean; email: string; firm_id: string | null }>;
 
 // --- Write actions surfacing existing backend endpoints ---
 

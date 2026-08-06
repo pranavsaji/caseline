@@ -15,9 +15,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
   }
   try {
-    const { email: authed } = await loginUser(email, password);
+    const { email: authed, firm_id: firmId } = await loginUser(email, password);
     const res = NextResponse.json({ ok: true, email: authed });
-    res.cookies.set(SESSION_COOKIE, await createSessionToken(authed), sessionCookieOptions);
+    res.cookies.set(
+      SESSION_COOKIE,
+      await createSessionToken(authed, firmId ?? null),
+      sessionCookieOptions,
+    );
     return res;
   } catch (err) {
     const { status, message } = parseApiError(err);

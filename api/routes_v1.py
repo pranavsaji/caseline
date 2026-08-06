@@ -228,9 +228,13 @@ def dashboard_login(
     firm: auth.AuthedFirm = Depends(auth.require_firm),
 ) -> dict:
     p = _platform(request)
-    if not dashboard_auth.verify_user(p.db, req.email, req.password):
+    identity = dashboard_auth.authenticate(p.db, req.email, req.password)
+    if identity is None:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return {"ok": True, "email": req.email.strip().lower()}
+    # firm_id tells the Next server which tenant to scope this session to. It is
+    # an opaque uuid, not a credential — every subsequent request still has to
+    # present the admin token to act as that firm (see auth.require_firm).
+    return {"ok": True, "email": identity["email"], "firm_id": identity["firm_id"]}
 
 
 # ---------------------------------------------------------------------------
