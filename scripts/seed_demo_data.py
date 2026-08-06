@@ -85,6 +85,75 @@ REFERRAL_PARTNERS = [
     },
 ]
 
+# Calls + per-turn latency for the Analytics page. Without these, a freshly
+# onboarded firm shows "No calls yet", "No turn metrics yet", and dashes for
+# answer speed and booked rate, because every one of those panels reads `calls`
+# or `turn_metrics` — tables the rest of this seed never touches. Qualification
+# and booking rate still render (they read leads/consults), which makes the page
+# look half-broken rather than empty.
+#
+# Outcomes are a realistic mix, including a couple of abandoned calls (outcome
+# and ended_at both NULL — that is exactly how analytics_outcomes counts them).
+#
+# (from_number, caller_type, outcome, days_ago, duration_s, turns)
+CALLS = [
+    ("+15125550501", "prospect", "qualified", 27.3, 214, 9),
+    ("+15125550502", "prospect", "refer_out", 26.1, 132, 6),
+    ("+15125550503", "prospect", "qualified", 24.6, 251, 11),
+    ("+15125550504", "spam", "spam", 23.9, 18, 2),
+    ("+15125550505", "prospect", "qualified", 22.4, 198, 8),
+    ("+15125550506", "existing_client", "transferred", 21.0, 96, 4),
+    ("+15125550507", "prospect", "not_qualified", 19.7, 143, 7),
+    ("+15125550508", "prospect", "qualified", 18.2, 232, 10),
+    ("+15125550509", "prospect", "qualified", 16.8, 188, 8),
+    ("+15125550510", "spam", "spam", 15.5, 22, 2),
+    ("+15125550511", "prospect", "refer_out", 14.1, 127, 6),
+    ("+15125550512", "prospect", "qualified", 12.9, 241, 10),
+    ("+15125550513", "existing_client", "transferred", 11.4, 88, 4),
+    ("+15125550514", "prospect", "not_qualified", 10.2, 151, 7),
+    ("+15125550515", "prospect", "qualified", 8.7, 205, 9),
+    # Caller hung up mid-intake: no outcome, no ended_at.
+    ("+15125550516", "prospect", None, 7.3, None, 3),
+    ("+15125550517", "prospect", "qualified", 6.1, 219, 9),
+    ("+15125550518", "prospect", "refer_out", 5.4, 118, 5),
+    ("+15125550519", "prospect", "qualified", 4.2, 236, 10),
+    ("+15125550520", "existing_client", "transferred", 3.6, 79, 4),
+    ("+15125550521", "prospect", "qualified", 2.8, 193, 8),
+    ("+15125550522", "prospect", "not_qualified", 2.1, 147, 7),
+    ("+15125550523", "prospect", "qualified", 1.4, 228, 10),
+    ("+15125550524", "prospect", None, 0.6, None, 2),
+]
+
+# Provider mix so "Latency by provider" has more than one row to compare. The
+# second stack is the failover path, hence fewer calls and slightly worse TTFT.
+# The factor is applied to LLM TTFT only, and is kept small on purpose: every
+# seeded turn must stay under the 800 ms p95 SLO, or the demo dashboard shows a
+# breach badge and contradicts the product's headline claim.
+CALL_PROVIDERS = [
+    ("deepgram", "deepseek", "cartesia", 1.00),
+    ("deepgram", "openai", "cartesia", 1.06),
+]
+
+# Per-turn latency budget in ms, split across the stages the dashboard charts.
+# Tuned to sit under the 800 ms p95 SLO with headroom, and to vary enough that
+# p50 and p95 are visibly different rather than a flat line.
+TURN_LATENCY_MS = [
+    # (eou_delay, stt, llm_ttft, tts_ttfb, guardrail)
+    (118, 84, 232, 141, 2.1),
+    (96, 71, 198, 126, 1.7),
+    (142, 92, 274, 158, 2.4),
+    (104, 78, 211, 133, 1.9),
+    (131, 88, 256, 149, 2.2),
+    (89, 66, 187, 119, 1.6),
+    (155, 97, 291, 167, 2.6),
+    (112, 81, 224, 138, 2.0),
+    (127, 86, 247, 145, 2.3),
+    (99, 74, 205, 129, 1.8),
+    (152, 95, 288, 161, 2.5),
+    (108, 79, 218, 136, 1.9),
+]
+
+
 # Webform/ad leads for the speed-to-lead header on /threads. That panel reads
 # ONLY `leads` with source in ('web','ad') from the last 30 days — a firm can
 # have a full Conversations table and still show dashes there, because threads
@@ -224,7 +293,8 @@ def _set_firm(cur, firm_id: str) -> None:
 
 def _seed(cur, firm_id: str, agent_id: str, firm_name: str = "the firm") -> dict:
     counts = {"referral_partners": 0, "referrals": 0, "threads": 0, "messages": 0,
-              "tuning_leads": 0, "lead_reviews": 0, "consults": 0, "chaser_leads": 0}
+              "tuning_leads": 0, "lead_reviews": 0, "consults": 0, "chaser_leads": 0,
+              "calls": 0, "turn_metrics": 0}
 
     def add_contact(name, phone, email) -> str:
         cur.execute(
@@ -307,6 +377,72 @@ def _seed(cur, firm_id: str, agent_id: str, firm_name: str = "the firm") -> dict
         )
         counts["tuning_leads"] += 1
         counts["lead_reviews"] += 1
+
+    # --- calls + turn metrics: the whole Analytics page -------------------
+    # Leads are attached to qualified calls (leads.call_id), and consults to
+    # those leads, so the call-level booked rate has something to join on —
+    # it counts calls that produced a consult, not consults in isolation.
+    booked_call_leads = []
+    for idx, (phone, caller_type, outcome, days_ago, duration, turns) in enumerate(CALLS):
+        call_id = f"{MARKER}:call:{idx}"
+        started = _ago(days_ago)
+        ended = None if duration is None else started + timedelta(seconds=duration)
+        stt, llm, tts, factor = CALL_PROVIDERS[idx % len(CALL_PROVIDERS)]
+
+        totals = []
+        for t in range(turns):
+            eou, stt_ms, llm_ms, tts_ms, guard = TURN_LATENCY_MS[
+                (idx * 3 + t) % len(TURN_LATENCY_MS)
+            ]
+            llm_ms *= factor
+            total = eou + stt_ms + llm_ms + tts_ms + guard
+            totals.append(total)
+            cur.execute(
+                "INSERT INTO turn_metrics (firm_id, call_id, speech_id, eou_delay_ms,"
+                " stt_ms, llm_ttft_ms, tts_ttfb_ms, guardrail_ms, total_ms,"
+                " stt_provider, llm_provider, tts_provider, created_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (firm_id, call_id, f"{call_id}:turn:{t}", eou, stt_ms, llm_ms, tts_ms,
+                 guard, total, stt, llm, tts,
+                 started + timedelta(seconds=12 * (t + 1))),
+            )
+        totals.sort()
+        p50 = totals[len(totals) // 2]
+        p95 = totals[min(len(totals) - 1, int(len(totals) * 0.95))]
+
+        cur.execute(
+            "INSERT INTO calls (id, firm_id, agent_id, direction, from_number,"
+            " started_at, ended_at, outcome, caller_type, summary,"
+            " latency_p50_ms, latency_p95_ms)"
+            " VALUES (%s,%s,%s,'in',%s,%s,%s,%s,%s,%s,%s,%s)"
+            " ON CONFLICT (firm_id, id) DO NOTHING",
+            (call_id, firm_id, agent_id, phone, started, ended, outcome, caller_type,
+             f"Inbound {caller_type.replace('_', ' ')} call — "
+             f"{outcome.replace('_', ' ') if outcome else 'caller hung up mid-intake'}.",
+             round(p50, 1), round(p95, 1)),
+        )
+        counts["calls"] += cur.rowcount
+        counts["turn_metrics"] += turns
+
+        if outcome == "qualified":
+            cid = add_contact(f"Caller {phone[-4:]}", phone, None)
+            cur.execute(
+                "INSERT INTO leads (firm_id, source, contact_id, call_id, status,"
+                " practice_area, external_cms_id, created_at)"
+                " VALUES (%s,'phone',%s,%s,'qualified',%s,%s,%s) RETURNING id",
+                (firm_id, cid, call_id, "personal injury", MARKER, started),
+            )
+            booked_call_leads.append((cur.fetchone()["id"], f"Caller {phone[-4:]}", phone))
+
+    # Roughly half the qualified calls booked on the spot.
+    for i, (lead_id, name, phone) in enumerate(booked_call_leads[::2]):
+        cur.execute(
+            "INSERT INTO consults (firm_id, lead_id, name, phone, slot_at, idempotency_key)"
+            " VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (firm_id, idempotency_key) DO NOTHING",
+            (firm_id, lead_id, name, phone, _future_weekday(3 + i * 2, 10 + (i % 6)),
+             f"{MARKER}:callconsult:{i}"),
+        )
+        counts["consults"] += cur.rowcount
 
     # --- webform/ad leads: the speed-to-lead panel on /threads ------------
     for contact, source, area, days_ago, secs in CHASER_LEADS:
@@ -410,7 +546,12 @@ def _reset(cur, firm_id: str) -> None:
     cur.execute("DELETE FROM threads WHERE firm_id=%s AND state->>'seed'=%s", (firm_id, MARKER))
     cur.execute("DELETE FROM consults WHERE firm_id=%s AND idempotency_key LIKE %s",
                 (firm_id, f"{MARKER}:%"))
+    cur.execute("DELETE FROM turn_metrics WHERE firm_id=%s AND call_id LIKE %s",
+                (firm_id, f"{MARKER}:call:%"))
+    # Leads reference calls by the (firm_id, id) key, so calls go after them.
     cur.execute("DELETE FROM leads WHERE firm_id=%s AND external_cms_id=%s", (firm_id, MARKER))
+    cur.execute("DELETE FROM calls WHERE firm_id=%s AND id LIKE %s",
+                (firm_id, f"{MARKER}:call:%"))
     cur.execute("DELETE FROM contacts WHERE firm_id=%s AND external_cms_id=%s",
                 (firm_id, MARKER))
 
