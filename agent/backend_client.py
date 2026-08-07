@@ -29,20 +29,79 @@ class BackendClient:
         base_url: str | None = None,
         client: httpx.AsyncClient | None = None,
         firm_token: str | None = None,
+        firm_id: str | None = None,
+        admin_token: str | None = None,
     ):
         base_url = base_url or os.getenv("CASELINE_BACKEND_URL", "http://localhost:8000")
         self._token = firm_token if firm_token is not None else os.getenv("CASELINE_FIRM_TOKEN", "")
-        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        self._firm_id = firm_id
+        self._admin_token = admin_token
+        # Acting as a named firm (admin + firm id) takes precedence: one worker
+        # serves every tenant, so the firm a given call belongs to has to win
+        # over whatever single firm the worker's env token happens to name.
+        if firm_id and admin_token:
+            headers = {"X-Admin-Token": admin_token, "X-Caseline-Firm-Id": firm_id}
+        elif self._token:
+            headers = {"Authorization": f"Bearer {self._token}"}
+        else:
+            headers = {}
         self._client = client or httpx.AsyncClient(
             base_url=base_url, timeout=DEFAULT_TIMEOUT, headers=headers
         )
-        if client is not None and self._token:
-            client.headers["Authorization"] = f"Bearer {self._token}"
+        if client is not None and headers:
+            client.headers.update(headers)
 
     @property
     def v1(self) -> bool:
         """True when running against the Phase 1 multi-tenant API."""
-        return bool(self._token)
+        return bool(self._token) or bool(self._firm_id and self._admin_token)
+
+    @staticmethod
+    async def for_call(
+        call_id: str,
+        base_url: str | None = None,
+        client: httpx.AsyncClient | None = None,
+    ) -> "BackendClient":
+        """Build a client scoped to the firm that owns ``call_id``.
+
+        One worker process answers calls for every tenant, so binding it to a
+        single firm via CASELINE_FIRM_TOKEN silently misfiles every call from
+        any other firm — the caller's matter lands in a stranger's CMS. The
+        backend knows who owns the room (the dashboard created the call row
+        before the browser ever connected), so ask it.
+
+        Falls back to the env firm token when no admin token is configured or
+        the lookup fails, which keeps single-tenant deploys working untouched.
+        """
+        admin_token = os.getenv("CASELINE_ADMIN_TOKEN", "")
+        if not admin_token:
+            return BackendClient(base_url=base_url, client=client)
+        base = base_url or os.getenv("CASELINE_BACKEND_URL", "http://localhost:8000")
+        try:
+            # Reuse the injected client when there is one, so the lookup travels
+            # the same transport as every other call (and is testable in-process)
+            # instead of quietly opening its own connection to a default URL.
+            if client is not None:
+                r = await client.get(
+                    f"/v1/calls/{call_id}/firm", headers={"X-Admin-Token": admin_token}
+                )
+            else:
+                async with httpx.AsyncClient(base_url=base, timeout=DEFAULT_TIMEOUT) as probe:
+                    r = await probe.get(
+                        f"/v1/calls/{call_id}/firm", headers={"X-Admin-Token": admin_token}
+                    )
+            r.raise_for_status()
+            firm_id = r.json()["firm_id"]
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
+            # Never fail a call over this: a caller hearing dead air is worse
+            # than a call recorded against the worker's default firm.
+            logger.warning("call %s: firm lookup failed (%s); using env firm token",
+                           call_id, exc)
+            return BackendClient(base_url=base_url, client=client)
+        logger.info("call %s scoped to firm %s", call_id, firm_id)
+        return BackendClient(
+            base_url=base_url, client=client, firm_id=firm_id, admin_token=admin_token
+        )
 
     async def _post(self, path: str, payload: dict) -> dict:
         r = await self._client.post(path, json=payload)

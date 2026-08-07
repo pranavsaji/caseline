@@ -566,6 +566,28 @@ def web_session(
     return {"room": room, "url": url, "token": token, "identity": identity}
 
 
+@router.get("/calls/{call_id}/firm", dependencies=[Depends(auth.require_admin)])
+def resolve_call_firm(call_id: str, request: Request) -> dict:
+    """Which firm owns this room? Asked by the agent worker at call start.
+
+    The worker is one process serving every tenant, so it cannot know from the
+    room name alone whose data a call belongs to — and getting it wrong writes
+    one firm's caller into another firm's CMS. The dashboard already created the
+    ``calls`` row under the right firm before handing the browser a LiveKit
+    token, so that row is the authority; this just reads it back.
+
+    Admin-gated because it is infrastructure talking to infrastructure: the
+    answer is a tenant id, which the caller then has to be separately authorized
+    to act as (see auth.require_firm).
+    """
+    p = _platform(request)
+    with p.db.admin() as conn:
+        row = conn.execute("SELECT firm_id FROM calls WHERE id = %s", (call_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown call")
+    return {"call_id": call_id, "firm_id": str(row["firm_id"])}
+
+
 @router.get("/calls")
 def list_calls(
     request: Request, limit: int = 50, firm: auth.AuthedFirm = Depends(auth.require_firm)

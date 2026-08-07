@@ -675,7 +675,9 @@ async def entrypoint(ctx: JobContext) -> None:
     # "outbound-manual-…"; lead chaser: "outbound-<lead>"). Everything else is
     # someone reaching us (inbound SIP "call-…", web "web-manual-…").
     is_outbound = call_id.startswith("outbound")
-    backend = BackendClient()
+    # Scope this call to the firm that actually owns the room, not to whichever
+    # single firm the worker's env token names — one worker serves every tenant.
+    backend = await BackendClient.for_call(call_id)
     tracker = TurnLatencyTracker(call_id=call_id)
     usage = metrics.UsageCollector()
 
